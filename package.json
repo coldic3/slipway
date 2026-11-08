@@ -1,0 +1,67 @@
+{
+  "name": "@coldic3/slipway",
+  "version": "1.0.0",
+  "description": "A local review station for AI-agent pull requests: review in a local Gitea, promote the approved commits to GitHub",
+  "keywords": [
+    "ai",
+    "code-review",
+    "pull-requests",
+    "gitea",
+    "github",
+    "claude-code",
+    "mcp"
+  ],
+  "homepage": "https://github.com/coldic3/slipway#readme",
+  "bugs": {
+    "url": "https://github.com/coldic3/slipway/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coldic3/slipway.git"
+  },
+  "license": "MIT",
+  "author": "Kevin Kaniaburka",
+  "type": "module",
+  "bin": {
+    "slipway": "dist/slipway.mjs"
+  },
+  "files": [
+    "dist/slipway.mjs",
+    "gitea/",
+    "docker/compose.yaml"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "slipway": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run test:unit && npm run test:functional",
+    "test:unit": "vitest run tests/unit",
+    "test:functional": "vitest run tests/functional",
+    "test:e2e": "playwright test",
+    "test:all": "npm test && npm run test:e2e",
+    "build:plugin": "node scripts/build-plugin.mjs",
+    "build:brand": "node scripts/build-brand.mjs && node scripts/stamp-assets.mjs",
+    "build": "npm run build:cli && npm run build:plugin",
+    "build:cli": "node scripts/build-cli.mjs",
+    "prepack": "npm run build:cli"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@playwright/test": "^1.65.0",
+    "@types/node": "^26.6.6",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0",
+    "zod": "^4.6.7"
+  }
+}

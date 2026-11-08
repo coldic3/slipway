@@ -1,0 +1,5 @@
+{{/* Slipway branding (ADR 0001): palette + trimmed UI, and signed-in home → the PR list. Inline scripts are blocked by CSP. */}}
+<link rel="stylesheet" href="{{AssetUrlPrefix}}/css/slipway.css?v=e13e51a4ea">
+<meta name="slipway-signed-in" content="{{if .IsSigned}}1{{else}}0{{end}}">
+<meta name="slipway-sub-url" content="{{AppSubUrl}}">
+<script src="{{AssetUrlPrefix}}/js/slipway-head.js?v=3519157e92"></script>

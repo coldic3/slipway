@@ -1,0 +1,11 @@
+# Keep GitHub's "Source code" release archives to what builds and runs Slipway (ADR 0011).
+# The repository itself still has everything; packages ship only the package.json "files" whitelist.
+docs/                export-ignore
+.ai/                 export-ignore
+CLAUDE.md            export-ignore
+tests/               export-ignore
+playwright.config.ts export-ignore
+vitest.config.ts     export-ignore
+.github/workflows/   export-ignore
+packaging/           export-ignore
+.gitattributes       export-ignore

@@ -1,0 +1,18 @@
+{
+  "name": "slipway",
+  "owner": {
+    "name": "Kevin Kaniaburka"
+  },
+  "metadata": {
+    "description": "Slipway: review AI-written PRs in a local Gitea, then promote them to GitHub."
+  },
+  "plugins": [
+    {
+      "name": "slipway",
+      "source": "./plugin",
+      "description": "Local Gitea review for AI-written PRs, promoted to GitHub after approval.",
+      "version": "1.0.0",
+      "homepage": "https://github.com/coldic3/slipway"
+    }
+  ]
+}

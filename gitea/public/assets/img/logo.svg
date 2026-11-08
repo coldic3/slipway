@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" class="slipway-logo" role="img" aria-label="Slipway">
+  <title>Slipway</title>
+  <!-- hull resting on dock blocks -->
+  <path d="M6 29 H58 L50.5 42 H13.5 Z" fill="#f2a43a"/>
+  <rect x="21" y="16" width="22" height="13" rx="2.5" fill="#e8f1fb"/>
+  <rect x="25" y="19.5" width="4" height="4" rx="1" fill="#2a2d31"/>
+  <rect x="35" y="19.5" width="4" height="4" rx="1" fill="#2a2d31"/>
+  <rect x="12" y="45" width="8" height="8" rx="1" fill="#9aa1aa"/>
+  <rect x="28" y="45" width="8" height="8" rx="1" fill="#9aa1aa"/>
+  <rect x="44" y="45" width="8" height="8" rx="1" fill="#9aa1aa"/>
+  <path d="M3 56 H61" stroke="#9aa1aa" stroke-width="3" stroke-linecap="round"/>
+</svg>

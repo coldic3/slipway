@@ -1,0 +1,29 @@
+# Slipway's optional Docker runtime (`slipway up --docker`, ADR 0002). Run it through the slipway CLI: it generates the
+# settings env file and the branding copy, and passes these variables:
+#   SLIPWAY_PROJECT       compose project name (default: slipway)
+#   SLIPWAY_PORT          host port, bound to 127.0.0.1 only (security invariant)
+#   SLIPWAY_GITEA_ENV     generated GITEA__section__KEY settings (src/runtime/settings.ts)
+#   SLIPWAY_GITEA_CUSTOM  Slipway's Gitea branding (a copy in ~/.slipway/gitea/custom)
+name: ${SLIPWAY_PROJECT:-slipway}
+
+services:
+  gitea:
+    image: gitea/gitea:28.3.0-rootless
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${SLIPWAY_PORT:?run this through slipway up --docker}:3000"
+    env_file:
+      - ${SLIPWAY_GITEA_ENV:?run this through slipway up --docker}
+    volumes:
+      - gitea-data:/var/lib/gitea
+      - ${SLIPWAY_GITEA_CUSTOM:?run this through slipway up --docker}:/var/lib/gitea/custom:ro
+      - gitea-config:/etc/gitea
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  gitea-data:
+  gitea-config:

@@ -1,0 +1,75 @@
+/* Slipway palette on top of gitea-dark: neutral dark gray + amber accent (ADR 0001). */
+:root {
+  --dd-gray-950: #141517;
+  --dd-gray-900: #1b1d20;
+  --dd-gray-850: #222428;
+  --dd-gray-800: #2a2d31;
+  --dd-gray-700: #3a3d42;
+  --dd-ink: #eceef1;
+  --dd-ink-muted: #a9aeb5;
+  --dd-amber: #f2a43a;
+  --dd-amber-dark: #d98a1f;
+
+  --color-body: var(--dd-gray-900);
+  --color-box-body: var(--dd-gray-850);
+  --color-box-body-highlight: var(--dd-gray-800);
+  --color-box-header: var(--dd-gray-800);
+  --color-nav-bg: var(--dd-gray-950);
+  --color-nav-hover-bg: var(--dd-gray-800);
+  --color-header-wrapper: var(--dd-gray-900);
+  --color-footer: var(--dd-gray-950);
+  --color-secondary: var(--dd-gray-700);
+  --color-secondary-bg: var(--dd-gray-850);
+  --color-input-background: var(--dd-gray-950);
+  --color-input-border: var(--dd-gray-700);
+  --color-menu: var(--dd-gray-850);
+  --color-card: var(--dd-gray-850);
+  --color-text: var(--dd-ink);
+  --color-text-light: var(--dd-ink-muted);
+  --color-primary: var(--dd-amber);
+  --color-primary-contrast: var(--dd-gray-950);
+  --color-primary-dark-1: var(--dd-amber-dark);
+  --color-primary-light-1: #f5b65f;
+  --color-primary-alpha-20: rgba(242, 164, 58, 0.2);
+  --color-primary-alpha-30: rgba(242, 164, 58, 0.3);
+  --color-accent: var(--dd-amber);
+}
+
+/* Navigation: only Slipway's things (Pull requests, Repositories, user menu). */
+#navbar a.item[href$="/explore/repos"]:not(.slipway-repos-link),
+#navbar a.item[href$="/milestones"],
+#navbar a.item[href$="/issues"],
+#navbar a.item[href$="/explore/organizations"],
+#navbar a.item[href="https://docs.gitea.com"],
+#navbar a.item[href$="/notifications"],
+#navbar .item[data-tooltip-content="Create…"],
+#navbar .item[data-tooltip-content="Create..."],
+#navbar a.item[href$="/repo/create"],
+#navbar a.item[href$="/repo/migrate"],
+#navbar a.item[href$="/org/create"],
+.user-menu a.item[href$="?tab=stars"],
+.user-menu a.item[href*="docs.gitea.com"] { display: none !important; }
+
+/* Sign-in page (style A). */
+.slipway-signin { background: var(--dd-gray-900); min-height: 100%; }
+.slipway-hero { text-align: center; color: var(--dd-ink); padding-top: 2rem; }
+.slipway-hero h1 { margin: 0.5rem 0 0.25rem; font-size: 2rem; letter-spacing: 0.02em; color: var(--dd-ink); }
+.slipway-hero p { margin: 0; color: var(--dd-ink-muted); }
+.slipway-signin .ui.attached.segment, .slipway-signin .ui.top.attached.header { background: var(--dd-gray-850); border-color: var(--dd-gray-700); }
+.slipway-signin .ui.primary.button { background: var(--dd-amber); color: var(--dd-gray-950); font-weight: 700; }
+
+/* PR page: the merge box only keeps Slipway's note. */
+.pull-merge-box .merge-section > .item:not(.slipway-promote-note) { display: none !important; }
+.slipway-promote-note { color: var(--dd-ink-muted); }
+
+.slipway-footer { color: var(--dd-ink-muted); }
+
+/* Sign-in: no password reset (mail is off), no duplicate "Sign In" in the top bar. Passkeys are off in app.ini. */
+.slipway-signin a[href$="/user/forgot_password"],
+#navbar a.item[href$="/user/login"] { display: none !important; }
+
+/* "Repositories" (explore) page: only the repo list, no users/organizations tabs. */
+.page-content.explore .explore-tabs a.item[href$="/explore/users"],
+.page-content.explore .explore-tabs a.item[href$="/explore/organizations"],
+.page-content.explore a.item[href$="/explore/users"],
+.page-content.explore a.item[href$="/explore/organizations"] { display: none !important; }

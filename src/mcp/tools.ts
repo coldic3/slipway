@@ -1,0 +1,292 @@
+import { slipwayEnv } from '../env.ts';
+import { hostname as osHostname } from 'node:os';
+import { loadConfig, saveConfig, type Account, type SlipwayConfig } from '../config.ts';
+import { prStateFromReviews } from '../core/approval.ts';
+import { GiteaClient } from '../gitea/client.ts';
+import type { GPull } from '../gitea/types.ts';
+import { defaultPromoteDeps } from '../promote/cli.ts';
+import { githubToken } from '../promote/github-token.ts';
+import { EXIT, promote as runPromote, type PromoteOptions, type PromoteResult } from '../promote/promote.ts';
+import { basicAuthArgs } from '../util/git-auth.ts';
+import { collectConventions } from './conventions.ts';
+import { resolveRepo, type RepoContext } from './context.ts';
+import { GiteaError } from '../gitea/client.ts';
+import { claudeUsername, ensureClaudeUser, giteaAdmin, resetEnrollmentCache, type GiteaAdminPort } from './enroll.ts';
+import { startTaskWorktree } from './start-task.ts';
+import { pushBranch, type PushOptions } from './push.ts';
+import { syncBase, type SyncBaseOptions } from '../setup/sync.ts';
+import { ensureRunning } from '../runtime/index.ts';
+
+export interface ToolResult { text: string; isError?: boolean }
+
+export interface ToolDeps {
+  loadConfig: () => SlipwayConfig;
+  saveConfig: (c: SlipwayConfig) => void;
+  hostname: () => string;
+  gitea: (config: SlipwayConfig, token: string) => GiteaClient;
+  admin: (config: SlipwayConfig) => GiteaAdminPort;
+  resolveRepo: (cwd: string, config: SlipwayConfig) => Promise<RepoContext>;
+  githubToken: () => Promise<string>;
+  /** Mirrors GitHub's base into Slipway's base (as Slipway's admin). */
+  syncBase: (o: SyncBaseOptions) => Promise<void>;
+  pushBranch: (o: PushOptions) => Promise<{ ok: boolean; message: string }>;
+  promote: (opts: PromoteOptions, ctx: { config: SlipwayConfig; actor: Account; token: string }) => Promise<PromoteResult>;
+  /** Starts the native Gitea if it is down (e.g. after a reboot, ADR 0002). */
+  ensureGitea?: () => Promise<void>;
+}
+
+export const defaultToolDeps: ToolDeps = {
+  loadConfig,
+  saveConfig,
+  hostname: osHostname,
+  gitea: (config, token) => new GiteaClient(config.giteaUrl, token),
+  admin: giteaAdmin,
+  resolveRepo,
+  githubToken: () => githubToken(),
+  syncBase,
+  pushBranch,
+  promote: (opts, ctx) => runPromote(opts, defaultPromoteDeps((m) => console.error(`slipway: ${m}`), ctx.token, ctx.actor)),
+  ensureGitea: ensureRunning,
+};
+
+interface Session {
+  config: SlipwayConfig;
+  repo: RepoContext;
+  claude: Account;
+  gitea: GiteaClient;
+  /** Gitea owner of the review repos (the org). */
+  owner: string;
+  /** The human reviewer whose approval counts. */
+  approver: string;
+}
+
+export interface CwdArg { cwd?: string }
+
+let identityChecked = false;
+/** Test hook: re-validate the saved Claude identity on the next call. */
+export function resetIdentityCheck(): void {
+  identityChecked = false;
+}
+
+const cwdOf = (a: CwdArg) => a.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+async function session(args: CwdArg, d: ToolDeps): Promise<Session> {
+  let config: SlipwayConfig;
+  try {
+    config = d.loadConfig();
+  } catch {
+    throw new Error('Slipway is not set up. Ask the user to run: slipway init');
+  }
+  const repo = await d.resolveRepo(cwdOf(args), config);
+  await d.ensureGitea?.();
+  // A saved identity Gitea no longer accepts (e.g. the instance was reset) is dropped and re-enrolled.
+  if (config.claude && !identityChecked) {
+    try {
+      await d.gitea(config, config.claude.token).req('GET', '/user');
+    } catch (e) {
+      if (!(e instanceof GiteaError && (e.status === 401 || e.status === 403))) throw e;
+      delete config.claude;
+      d.saveConfig(config);
+      resetEnrollmentCache();
+    }
+    identityChecked = true;
+  }
+  // Build the admin port only when enrollment is actually needed.
+  const claude = config.claude ?? await ensureClaudeUser(config, {
+    admin: d.admin(config),
+    save: d.saveConfig,
+    reload: d.loadConfig,
+    username: claudeUsername(d.hostname(), slipwayEnv('CLAUDE_USER')),
+  });
+  return { config, repo, claude, gitea: d.gitea(config, claude.token), owner: config.org, approver: config.reviewer.username };
+}
+
+/** Runs a tool body; any thrown error becomes a readable tool error (never a stack trace with secrets). */
+async function tool(fn: () => Promise<string>): Promise<ToolResult> {
+  try {
+    return { text: await fn() };
+  } catch (e) {
+    return { text: (e as Error).message, isError: true };
+  }
+}
+
+async function findPr(s: Session, pr?: number): Promise<GPull> {
+  if (pr) return s.gitea.getPull(s.owner, s.repo.name, pr);
+  const open = await s.gitea.listPulls(s.owner, s.repo.name, 'open');
+  const mine = open.find((p) => p.head.ref === s.repo.branch);
+  if (mine) return mine;
+  const others = open.map((p) => `#${p.number} ${p.title} (${p.head.ref})`).join('\n') || '(none)';
+  throw new Error(`No open Slipway PR for branch ${s.repo.branch ?? '(detached)'}. Pass "pr". Open PRs:\n${others}`);
+}
+
+async function stateOf(s: Session, p: GPull) {
+  return prStateFromReviews(await s.gitea.listReviews(s.owner, s.repo.name, p.number), s.approver, p.head.sha, p.state === 'open');
+}
+
+/**
+ * Brings Slipway's base branch up to date with GitHub before work is pushed, so PR diffs are against the current
+ * main (merged promotions included). Never blocks: on failure it returns a warning line for the tool result.
+ */
+async function syncSlipwayBase(s: Session, d: ToolDeps): Promise<string> {
+  try {
+    await d.syncBase({
+      repoDir: s.repo.entry.path, base: s.repo.entry.base, giteaRepoUrl: giteaUrlOf(s),
+      authArgs: basicAuthArgs(s.config.admin.username, s.config.admin.token),
+    });
+    return '';
+  } catch (e) {
+    return `\nWarning: Slipway ${s.repo.entry.base} was not updated from GitHub (${(e as Error).message}). The PR diff may include commits already on GitHub.`;
+  }
+}
+
+function giteaUrlOf(s: Session): string {
+  return `${s.config.giteaUrl.replace(/\/$/, '')}/${s.owner}/${s.repo.name}.git`;
+}
+
+// ---- tools ---------------------------------------------------------------------------------------
+
+export function status(args: CwdArg, d: ToolDeps = defaultToolDeps): Promise<ToolResult> {
+  return tool(async () => {
+    const s = await session(args, d);
+    const version = await s.gitea.version().then((v) => v.version, () => 'unreachable');
+    const lines = [
+      `Gitea: ${s.config.giteaUrl} (${version})`,
+      `Repo: ${s.repo.name} (GitHub ${s.repo.entry.github}, base ${s.repo.entry.base})`,
+      `You are Gitea user: ${s.claude.username}`,
+      `Branch: ${s.repo.branch ?? '(detached HEAD)'}`,
+    ];
+    const open = await s.gitea.listPulls(s.owner, s.repo.name, 'open');
+    const pr = open.find((p) => p.head.ref === s.repo.branch);
+    if (pr) {
+      const unresolved = await s.gitea.unresolvedComments(s.owner, s.repo.name, pr.number, s.claude.username);
+      lines.push(`PR: #${pr.number} "${pr.title}" ${pr.html_url}`, `State: ${await stateOf(s, pr)}`, `Unresolved review comments: ${unresolved.length}`);
+    } else {
+      lines.push('PR: none for this branch');
+    }
+    return lines.join('\n');
+  });
+}
+
+export function repoConventions(args: CwdArg, d: ToolDeps = defaultToolDeps): Promise<ToolResult> {
+  return tool(async () => {
+    const config = d.loadConfig();
+    const repo = await d.resolveRepo(cwdOf(args), config);
+    const c = collectConventions(repo.worktree);
+    const header = c.usedFallbackTemplate
+      ? 'This repo has no PR template; use the Slipway default template below unless the other rules say otherwise.'
+      : 'Follow these repository rules for the PR title and description. The repo rules win over any Slipway default.';
+    const branches = 'Branch names: if these rules define a branch naming scheme, name the task branch by it (slipway_start_task `branch`); otherwise leave `branch` out and Slipway uses agent/<task_id>-<slug>.';
+    return [header, branches, ...c.items.map((i) => `\n===== ${i.source} =====\n${i.content}`)].join('\n');
+  });
+}
+
+export function push(args: CwdArg & { force_with_lease?: boolean }, d: ToolDeps = defaultToolDeps): Promise<ToolResult> {
+  return tool(async () => {
+    const s = await session(args, d);
+    const warning = await syncSlipwayBase(s, d);
+    const r = await d.pushBranch({
+      worktree: s.repo.worktree, repoDir: s.repo.entry.path, url: giteaUrlOf(s),
+      authArgs: basicAuthArgs(s.claude.username, s.claude.token), base: s.repo.entry.base, branch: s.repo.branch, force: !!args.force_with_lease,
+    });
+    if (!r.ok) throw new Error(r.message + warning);
+    return r.message + (args.force_with_lease ? '\nThe head changed: the PR needs a fresh approval from the user.' : '') + warning;
+  });
+}
+
+export function openPr(args: CwdArg & { title: string; body: string; base?: string }, d: ToolDeps = defaultToolDeps): Promise<ToolResult> {
+  return tool(async () => {
+    const s = await session(args, d);
+    const warning = await syncSlipwayBase(s, d);
+    const pushed = await d.pushBranch({
+      worktree: s.repo.worktree, repoDir: s.repo.entry.path, url: giteaUrlOf(s),
+      authArgs: basicAuthArgs(s.claude.username, s.claude.token), base: s.repo.entry.base, branch: s.repo.branch, force: false,
+    });
+    if (!pushed.ok) throw new Error(pushed.message + warning);
+    const existing = (await s.gitea.listPulls(s.owner, s.repo.name, 'open')).find((p) => p.head.ref === s.repo.branch);
+    if (existing) return `${pushed.message}\nPR #${existing.number} already exists: ${existing.html_url}\nUse slipway_update_pr to change its title/description.${warning}`;
+    const pr = await s.gitea.createPull(s.owner, s.repo.name, { head: s.repo.branch!, base: args.base ?? s.repo.entry.base, title: args.title, body: args.body });
+    return `${pushed.message}\nOpened PR #${pr.number}: ${pr.html_url}\nTell the user it is ready for review in Gitea.${warning}`;
+  });
+}
+
+export function updatePr(args: CwdArg & { pr?: number; title?: string; body?: string }, d: ToolDeps = defaultToolDeps): Promise<ToolResult> {
+  return tool(async () => {
+    if (args.title === undefined && args.body === undefined) throw new Error('Nothing to update: pass title and/or body.');
+    const s = await session(args, d);
+    const pr = await findPr(s, args.pr);
+    if ((await stateOf(s, pr)) === 'approved') {
+      throw new Error(`PR #${pr.number} is approved: its title/description are frozen for you. Ask the user to edit them in Gitea, or to request changes first.`);
+    }
+    const patch: { title?: string; body?: string } = {};
+    if (args.title !== undefined) patch.title = args.title;
+    if (args.body !== undefined) patch.body = args.body;
+    await s.gitea.editPull(s.owner, s.repo.name, pr.number, patch);
+    return `Updated PR #${pr.number}: ${pr.html_url}`;
+  });
+}
+
+export function reviewComments(args: CwdArg & { pr?: number }, d: ToolDeps = defaultToolDeps): Promise<ToolResult> {
+  return tool(async () => {
+    const s = await session(args, d);
+    const pr = await findPr(s, args.pr);
+    const comments = await s.gitea.unresolvedComments(s.owner, s.repo.name, pr.number, s.claude.username);
+    if (comments.length === 0) return `PR #${pr.number}: no unresolved review comments.`;
+    const blocks = comments.map((c) =>
+      c.id === 0
+        ? `--- review summary by ${c.author} (no reply needed) ---\n${c.body}`
+        : `--- comment_id: ${c.id} · ${c.path}:${c.line} · by ${c.author} ---\n${c.body}${c.diffHunk ? `\ncontext:\n${c.diffHunk}` : ''}`,
+    );
+    return `PR #${pr.number} "${pr.title}": ${comments.length} item(s) to address.\n\n${blocks.join('\n\n')}`;
+  });
+}
+
+export function reply(args: CwdArg & { pr?: number; comment_id: number; body: string }, d: ToolDeps = defaultToolDeps): Promise<ToolResult> {
+  return tool(async () => {
+    const s = await session(args, d);
+    const pr = await findPr(s, args.pr);
+    const r = await s.gitea.replyToComment(s.owner, s.repo.name, pr.number, args.comment_id, args.body);
+    return `Replied in thread ${args.comment_id}: ${r.html_url ?? ''}`.trim();
+  });
+}
+
+export interface PromoteArgs extends CwdArg {
+  pr?: number;
+  draft?: boolean;
+  base?: string;
+  test_cmd?: string;
+}
+
+const NEXT_STEP: Record<number, string> = {
+  [EXIT.NOT_APPROVED]: 'Not promoted: the user has not approved this PR at its current commit. Ask them to review and approve it in Gitea.',
+  [EXIT.CONFLICT]: 'Not promoted: the branch is behind the current base on GitHub, and Slipway promotes exactly what was reviewed. `git fetch origin`, `git rebase origin/<base>`, resolve every conflict together with the user (show each conflict and ask when the right resolution is not obvious), run the tests, push with slipway_push force_with_lease=true, then ask the user to approve the PR again in Gitea.',
+  [EXIT.SECRETS]: 'Not promoted: the secret scan blocked it (or could not run). Remove the secret from the branch history, push again and ask for a re-approval. Do not try to bypass the scan.',
+  [EXIT.TESTS]: 'Not promoted: the tests failed on the rebased branch. Fix them, push and ask for a re-approval.',
+  [EXIT.ERROR]: 'Not promoted.',
+};
+
+export function promoteTool(args: PromoteArgs, d: ToolDeps = defaultToolDeps): Promise<ToolResult> {
+  return tool(async () => {
+    const s = await session(args, d);
+    const pr = await findPr(s, args.pr);
+    const token = await d.githubToken();
+    const r = await d.promote(
+      { repo: s.repo.name, pr: pr.number, draft: !!args.draft, base: args.base, testCmd: args.test_cmd, force: false },
+      { config: s.config, actor: s.claude, token },
+    );
+    if (r.code === EXIT.OK) return `Promoted PR #${pr.number} to GitHub: ${r.url}\nThe Slipway PR is closed with a link.`;
+    const details = (r.message ?? 'see the PR comments in Gitea').replace(/\s*(or use|Use) --force\.?/gi, '.');
+    throw new Error(`${NEXT_STEP[r.code] ?? 'Not promoted.'}\nDetails: ${details}`);
+  });
+}
+
+export function startTask(args: CwdArg & { task_id: string; slug: string; branch?: string }, d: ToolDeps = defaultToolDeps): Promise<ToolResult> {
+  return tool(async () => {
+    const s = await session(args, d);
+    const warning = await syncSlipwayBase(s, d);
+    const r = await startTaskWorktree({ repoDir: s.repo.entry.path, base: s.repo.entry.base, taskId: args.task_id, slug: args.slug, branch: args.branch });
+    return [
+      `${r.existed ? 'Reusing' : 'Created'} worktree ${r.path} on branch ${r.branch} (from origin/${s.repo.entry.base}).`,
+      `Work only inside it: run \`cd ${r.path}\` first, and pass cwd="${r.path}" to every slipway_* tool.`,
+    ].join('\n') + warning;
+  });
+}

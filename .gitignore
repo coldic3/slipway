@@ -1,0 +1,11 @@
+node_modules/
+.DS_Store
+test-results/
+playwright-report/
+.e2e-tmp/
+coverage/
+.superpowers/
+.playwright-mcp/
+dist/
+.e2e-cache/
+*.tgz

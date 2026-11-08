@@ -1,0 +1,62 @@
+name: Release
+
+# Push a tag vX.Y.Z (the version in package.json, plugin.json and the marketplace) to release. See docs/releasing.md.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  id-token: write   # npm Trusted Publishing (OIDC): no npm token anywhere
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      # Optional: without it the release still happens on GitHub; the tap update is skipped.
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - name: Install gitleaks
+        run: curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz | tar -xz -C /usr/local/bin gitleaks
+      - run: npm ci
+      - name: Tag matches every version
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          test "$v" = "$(node -p 'require("./package.json").version')"
+          test "$v" = "$(node -p 'require("./plugin/.claude-plugin/plugin.json").version')"
+          test "$v" = "$(node -p 'require("./.claude-plugin/marketplace.json").plugins[0].version')"
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+      - run: npm run typecheck && npm test
+      - name: Pack
+        run: |
+          npm pack
+          echo "SHA256=$(sha256sum coldic3-slipway-$VERSION.tgz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "coldic3-slipway-$VERSION.tgz" --title "Slipway $VERSION" --generate-notes
+      - name: Update the Homebrew tap
+        if: env.TAP_TOKEN != ''
+        run: |
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/coldic3/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          sed -e "s/__VERSION__/$VERSION/g" -e "s/__SHA256__/$SHA256/g" packaging/homebrew/slipway.rb > tap/Formula/slipway.rb
+          cd tap
+          git config user.name "slipway-release"
+          git config user.email "slipway-release@users.noreply.github.com"
+          git add Formula/slipway.rb
+          git commit -m "slipway $VERSION"
+          git push
+      # npm Trusted Publishing: set the repository variable NPM_TRUSTED_PUBLISHING=true once the package's trusted publisher
+      # (this repo + release.yml) is configured on npmjs.com. Provenance is attached automatically. See docs/releasing.md.
+      - name: Publish to npm
+        if: vars.NPM_TRUSTED_PUBLISHING == 'true'
+        run: |
+          npm install -g npm@11.6.2
+          npm publish "coldic3-slipway-$VERSION.tgz" --access public

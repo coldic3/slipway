@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Slipway CLI entrypoint. Resolves symlinks so it works when linked onto PATH.
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK=$(readlink "$SELF")
+  case "$LINK" in /*) SELF="$LINK" ;; *) SELF="$(dirname "$SELF")/$LINK" ;; esac
+done
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/src/cli.ts" "$@"
