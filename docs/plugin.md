@@ -40,7 +40,7 @@ Restart Claude Code if asked. The plugin brings:
 - **MCP tools** `slipway_status`, `slipway_start_task`, `slipway_repo_conventions`, `slipway_push`, `slipway_open_pr`, `slipway_update_pr`,
   `slipway_review_comments`, `slipway_reply`, `slipway_promote`;
 - **skills** `slipway:start-task`, `slipway:open-pr`, `slipway:fix-review`, `slipway:promote`;
-- **a guardrail hook**: in Slipway repos it stops `git push` and GitHub PR writes (`gh pr create/merge/…`, `gh api` writes) for a
+- **a guardrail hook**: in Slipway repos it stops `git push` and GitHub PR writes (`gh pr create/merge/…`, `gh api` writes; GraphQL counts as a write only with a `mutation`) for a
   branch that has an open Slipway PR or none at all, and points Claude to the Slipway tools instead. Once the branch's Slipway PR is
   closed (promotion closes it), the branch lives on GitHub: Claude may push to it and answer GitHub reviewers directly (ADR 0009). It also stops `slipway promote` from Claude's shell: Claude promotes only through `slipway_promote`.
 

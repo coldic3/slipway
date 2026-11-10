@@ -1,5 +1,10 @@
 import { createRequire as __slipwayRequire } from 'node:module'; const require = __slipwayRequire(import.meta.url);
 
+// src/mcp/hook.ts
+import { readFileSync as readFileSync2 } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { resolve as resolve2 } from "node:path";
+
 // src/config.ts
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -231,7 +236,7 @@ var GiteaClient = class {
 // src/util/exec.ts
 import { spawn } from "node:child_process";
 function run(cmd, args, opts = {}) {
-  return new Promise((resolve2) => {
+  return new Promise((resolve3) => {
     const child = spawn(cmd, args, {
       cwd: opts.cwd,
       env: opts.env ?? process.env,
@@ -251,11 +256,11 @@ function run(cmd, args, opts = {}) {
     child.stderr.on("data", (d) => stderr += d);
     child.on("error", (err) => {
       if (timer) clearTimeout(timer);
-      resolve2({ code: err.code === "ENOENT" ? 127 : 1, stdout, stderr: stderr + String(err.message) });
+      resolve3({ code: err.code === "ENOENT" ? 127 : 1, stdout, stderr: stderr + String(err.message) });
     });
     child.on("close", (code) => {
       if (timer) clearTimeout(timer);
-      resolve2({ code: code ?? 1, stdout, stderr });
+      resolve3({ code: code ?? 1, stdout, stderr });
     });
     child.stdin.on("error", () => {
     });
@@ -344,7 +349,61 @@ function gitSubcommandIndex(w) {
   }
   return -1;
 }
-function ghApiWrites(w) {
+var GH_API_OPTS_WITH_VALUE = /* @__PURE__ */ new Set([
+  "-X",
+  "--method",
+  "-H",
+  "--header",
+  "-f",
+  "-F",
+  "--field",
+  "--raw-field",
+  "--input",
+  "-q",
+  "--jq",
+  "-t",
+  "--template",
+  "--hostname",
+  "-p",
+  "--preview",
+  "--cache"
+]);
+function ghApiEndpoint(w) {
+  for (let i = 2; i < w.length; i++) {
+    const a = w[i];
+    if (GH_API_OPTS_WITH_VALUE.has(a)) {
+      i++;
+      continue;
+    }
+    if (a.startsWith("-")) continue;
+    return unquote(a);
+  }
+  return null;
+}
+var MUTATION = /\bmutation\b/;
+function graphqlWrites(w, command, cwd) {
+  if (MUTATION.test(command)) return true;
+  const files = [];
+  for (let i = 2; i < w.length; i++) {
+    const a = w[i];
+    if (a === "--input") files.push(unquote(w[i + 1] ?? ""));
+    else if (a.startsWith("--input=")) files.push(unquote(a.slice("--input=".length)));
+    const field = a === "-F" || a === "--field" ? unquote(w[i + 1] ?? "") : a.startsWith("--field=") ? unquote(a.slice("--field=".length)) : "";
+    const at = field.indexOf("=@");
+    if (at > 0) files.push(field.slice(at + 2));
+  }
+  for (const f of files) {
+    if (f === "-" || f === "") continue;
+    try {
+      if (MUTATION.test(readFileSync2(resolve2(cwd, f.replace(/^~(?=\/)/, homedir2())), "utf8"))) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+function ghApiWrites(w, command, cwd) {
+  if (ghApiEndpoint(w) === "graphql") return graphqlWrites(w, command, cwd);
   for (let i = 2; i < w.length; i++) {
     const a = w[i];
     if ((a === "-X" || a === "--method") && WRITE_METHODS.test(w[i + 1] ?? "")) return true;
@@ -452,7 +511,7 @@ async function decide(input, env) {
         branch = sel === null ? env.currentBranch() : await env.githubPrHead(sel).catch(() => null);
       }
       d = await judgeBranch(branch, `"gh pr ${w[2]}"`, env);
-    } else if (w[0] === "gh" && w[1] === "api" && ghApiWrites(w)) {
+    } else if (w[0] === "gh" && w[1] === "api" && ghApiWrites(w, command, input.cwd)) {
       d = await judgeBranch(env.currentBranch(), 'writing to GitHub through "gh api"', env);
     }
     if (d.block) return d;

@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { decide, ghPrSelector, pushedBranches, type BranchState, type HookEnv } from '../../src/mcp/hook.ts';
 
@@ -144,5 +147,41 @@ describe('argument parsing', () => {
     expect(ghPrSelector(['-b', 'hi'])).toBeNull();
     expect(ghPrSelector(['12', '--squash'])).toBe('12');
     expect(ghPrSelector(['--body', 'x y', 'my-branch'])).toBe('my-branch');
+  });
+});
+
+describe('PreToolUse hook: gh api graphql is judged by its document, not by POST', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'slipway-hook-'));
+  const read = '{"query":"query($o:String!){repository(owner:$o,name:\\"d\\"){pullRequest(number:70){reviewThreads(first:100){nodes{isResolved isOutdated}}}}}"}';
+  writeFileSync(join(dir, 'q.json'), read);
+  writeFileSync(join(dir, 'q.graphql'), 'query { viewer { login } }');
+  writeFileSync(join(dir, 'm.json'), '{"query":"mutation { resolveReviewThread(input:{threadId:\\"x\\"}) { thread { id } } }"}');
+  writeFileSync(join(dir, 'm.graphql'), 'mutation { addComment(input:{}) { clientMutationId } }');
+
+  it.each([
+    `gh api graphql --paginate -f query='query($endCursor:String){repository(owner:"k",name:"d"){pullRequest(number:70){reviewThreads(first:100,after:$endCursor){nodes{isResolved isOutdated}}}}}'`,
+    `gh api graphql -f query='{ viewer { login } }' -F n=70`,
+    'gh api graphql --input q.json',
+    'gh api graphql --input=q.json --jq .data',
+    'gh api graphql -F query=@q.graphql',
+    `gh api graphql --input - <<'EOF'\n${read}\nEOF`,
+  ])('read-only query → allowed without a Slipway PR: %s', async (cmd) => {
+    expect((await decide(bash(cmd, dir), env({}))).block).toBe(false);
+  });
+
+  it.each([
+    `gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:"x"}) { thread { id } } }'`,
+    'gh api graphql --input m.json',
+    'gh api graphql -F query=@m.graphql',
+    'gh api graphql --input missing.json',
+    `gh api graphql --input - <<'EOF'\n{"query":"mutation { x }"}\nEOF`,
+  ])('mutation (or an unreadable document) → blocked without a Slipway PR: %s', async (cmd) => {
+    const d = await decide(bash(cmd, dir), env({}));
+    expect(d.block).toBe(true);
+    if (d.block) expect(d.reason).toMatch(/gh api/);
+  });
+
+  it('a mutation is allowed on a promoted branch', async () => {
+    expect((await decide(bash('gh api graphql --input m.json', dir), env({ 'agent/1-x': 'closed' }))).block).toBe(false);
   });
 });
