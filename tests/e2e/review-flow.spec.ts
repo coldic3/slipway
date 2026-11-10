@@ -74,7 +74,8 @@ test('one Claude session: open PR → review in Gitea UI → fix → approve →
 
     // While the Slipway PR is open, the hook keeps GitHub out of reach.
     expect(await hookBlocks(wt, 'git push origin agent/1-greeting')).toBe(true);
-    expect(await hookBlocks(wt, 'gh pr comment -b hi')).toBe(true);
+    expect(await hookBlocks(wt, 'gh pr create --title x --body y')).toBe(true);
+    expect(await hookBlocks(wt, 'gh pr comment -b hi')).toBe(false); // comments publish no code
 
     // Kevin: "promote".
     const promoted = await claude.ok('slipway_promote', { cwd: wt });

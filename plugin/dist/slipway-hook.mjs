@@ -289,8 +289,7 @@ async function resolveRepo(cwd, config) {
 }
 
 // src/mcp/hook.ts
-var GH_PR_WRITES = /* @__PURE__ */ new Set(["create", "edit", "merge", "close", "reopen", "ready", "review", "comment"]);
-var WRITE_METHODS = /^(POST|PATCH|PUT|DELETE)$/i;
+var GH_PR_PUBLISH = /* @__PURE__ */ new Set(["create", "ready", "merge"]);
 var PUSH_OPTS_WITH_VALUE = /* @__PURE__ */ new Set(["-o", "--push-option", "--repo", "--receive-pack", "--exec"]);
 var GH_PR_OPTS_WITH_VALUE = /* @__PURE__ */ new Set([
   "-R",
@@ -381,8 +380,21 @@ function ghApiEndpoint(w) {
   return null;
 }
 var MUTATION = /\bmutation\b/;
-function graphqlWrites(w, command, cwd) {
-  if (MUTATION.test(command)) return true;
+var PUBLISH_MUTATIONS = /* @__PURE__ */ new Set([
+  "createPullRequest",
+  "mergePullRequest",
+  "markPullRequestReadyForReview",
+  "enablePullRequestAutoMerge",
+  "enqueuePullRequest",
+  "revertPullRequest",
+  "updatePullRequestBranch",
+  "mergeBranch",
+  "createCommitOnBranch",
+  "createRef",
+  "updateRef",
+  "updateRefs"
+]);
+function graphqlPublishes(w, command, cwd) {
   const files = [];
   for (let i = 2; i < w.length; i++) {
     const a = w[i];
@@ -392,25 +404,43 @@ function graphqlWrites(w, command, cwd) {
     const at = field.indexOf("=@");
     if (at > 0) files.push(field.slice(at + 2));
   }
+  let doc = command;
   for (const f of files) {
     if (f === "-" || f === "") continue;
     try {
-      if (MUTATION.test(readFileSync2(resolve2(cwd, f.replace(/^~(?=\/)/, homedir2())), "utf8"))) return true;
+      doc += "\n" + readFileSync2(resolve2(cwd, f.replace(/^~(?=\/)/, homedir2())), "utf8");
     } catch {
       return true;
     }
   }
-  return false;
+  if (!MUTATION.test(doc)) return false;
+  const names = [...doc.matchAll(/\b([A-Za-z_]\w*)\s*\(\s*input\s*:/g)].map((m) => m[1]);
+  return names.length === 0 || names.some((n) => PUBLISH_MUTATIONS.has(n));
 }
-function ghApiWrites(w, command, cwd) {
-  if (ghApiEndpoint(w) === "graphql") return graphqlWrites(w, command, cwd);
+function ghApiMethod(w) {
+  let fields = false;
   for (let i = 2; i < w.length; i++) {
     const a = w[i];
-    if ((a === "-X" || a === "--method") && WRITE_METHODS.test(w[i + 1] ?? "")) return true;
-    if (/^(-X|--method=)(POST|PATCH|PUT|DELETE)$/i.test(a)) return true;
-    if (["-f", "-F", "--field", "--raw-field", "--input"].includes(a) || /^--(raw-)?field=/.test(a)) return true;
+    if (a === "-X" || a === "--method") return (w[i + 1] ?? "").toUpperCase();
+    const m = /^(?:-X|--method=)([A-Za-z]+)$/.exec(a);
+    if (m) return m[1].toUpperCase();
+    if (["-f", "-F", "--field", "--raw-field", "--input"].includes(a) || /^--(raw-)?field=/.test(a)) fields = true;
   }
-  return false;
+  return fields ? "POST" : "GET";
+}
+function restPublishes(endpoint, method) {
+  if (method === "GET" || method === "HEAD") return false;
+  const path = endpoint.replace(/^\/+/, "").replace(/\?.*$/, "");
+  const m = /^repos\/[^/]+\/[^/]+\/(.*)$/.exec(path);
+  if (!m) return false;
+  const rest = m[1].replace(/\/+$/, "");
+  if (rest === "pulls") return method === "POST";
+  return /^(pulls\/\d+\/(merge|update-branch)|merges|git\/(refs|commits|trees|blobs|tags)(\/.*)?|contents\/.+)$/.test(rest);
+}
+function ghApiPublishes(w, command, cwd) {
+  const endpoint = ghApiEndpoint(w);
+  if (endpoint === "graphql") return graphqlPublishes(w, command, cwd);
+  return endpoint !== null && restPublishes(endpoint, ghApiMethod(w));
 }
 var unquote = (s) => s.replace(/^(['"])(.*)\1$/, "$2");
 function pushedBranches(args) {
@@ -501,7 +531,7 @@ async function decide(input, env) {
       }
     } else if (exe === "slipway" && w[1] === "promote" || exe === "promote.sh") {
       d = { block: true, reason: "Slipway: promotion from the shell is for the user. Use the slipway_promote tool (it requires the user's approval)." };
-    } else if (w[0] === "gh" && w[1] === "pr" && GH_PR_WRITES.has(w[2] ?? "")) {
+    } else if (w[0] === "gh" && w[1] === "pr" && GH_PR_PUBLISH.has(w[2] ?? "")) {
       const args = w.slice(3);
       let branch;
       if (w[2] === "create") {
@@ -511,7 +541,7 @@ async function decide(input, env) {
         branch = sel === null ? env.currentBranch() : await env.githubPrHead(sel).catch(() => null);
       }
       d = await judgeBranch(branch, `"gh pr ${w[2]}"`, env);
-    } else if (w[0] === "gh" && w[1] === "api" && ghApiWrites(w, command, input.cwd)) {
+    } else if (w[0] === "gh" && w[1] === "api" && ghApiPublishes(w, command, input.cwd)) {
       d = await judgeBranch(env.currentBranch(), 'writing to GitHub through "gh api"', env);
     }
     if (d.block) return d;

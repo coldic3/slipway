@@ -40,9 +40,9 @@ Restart Claude Code if asked. The plugin brings:
 - **MCP tools** `slipway_status`, `slipway_start_task`, `slipway_repo_conventions`, `slipway_push`, `slipway_open_pr`, `slipway_update_pr`,
   `slipway_review_comments`, `slipway_reply`, `slipway_promote`;
 - **skills** `slipway:start-task`, `slipway:open-pr`, `slipway:fix-review`, `slipway:promote`;
-- **a guardrail hook**: in Slipway repos it stops `git push` and GitHub PR writes (`gh pr create/merge/…`, `gh api` writes; GraphQL counts as a write only with a `mutation`) for a
+- **a guardrail hook**: in Slipway repos it stops `git push` and publishing a GitHub PR (`gh pr create/ready/merge` and the matching `gh api` calls) for a
   branch that has an open Slipway PR or none at all, and points Claude to the Slipway tools instead. Once the branch's Slipway PR is
-  closed (promotion closes it), the branch lives on GitHub: Claude may push to it and answer GitHub reviewers directly (ADR 0009). It also stops `slipway promote` from Claude's shell: Claude promotes only through `slipway_promote`.
+  closed (promotion closes it), the branch lives on GitHub: Claude may push to it and answer GitHub reviewers directly (ADR 0009). Reviews, comments and other GitHub writes that publish no code are never blocked. It also stops `slipway promote` from Claude's shell: Claude promotes only through `slipway_promote`.
 
 On first use, the plugin creates its own Gitea user for this machine (`claude-<hostname>`, or `SLIPWAY_CLAUDE_USER`).
 Its PRs and replies show under that name, and it can push branches but never merge.
