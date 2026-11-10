@@ -19,7 +19,9 @@ GitHub from the same session, exactly as reviewed. Key decisions: `docs/adr/`. U
 - Promotion publishes exactly the reviewed commits: no fixup/autosquash magic at promotion. If the base moved, rebase in Slipway
   (resolving conflicts with the user) and get a fresh approval.
 - Slipway's base branch follows GitHub automatically. After promotion, GitHub review happens on GitHub and the hook lets it through.
-- It is a workflow aid against agent mistakes, not a firewall against a malicious agent.
+- It is a workflow aid against agent mistakes, not a firewall against a malicious agent. The guard hook is a light helper:
+  blocking too little beats blocking too much. When building or reviewing it, rank rare bypasses and "ask instead of deny" low;
+  rank over-blocking, slowness and regressions of common agent habits high. Stay critical anyway.
 - UI: Slipway branding, dark gray and amber, English only, only the features Slipway supports; avatars from Gravatar.
 - Public repo `coldic3/slipway`, branch `main`, MIT, macOS and Linux only, one version everywhere. Packages ship only what Slipway
   needs to run (no CLAUDE.md, docs, credentials or ignored files). The README stays short and factual and does not mention Gitea.
