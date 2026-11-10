@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 import { loadConfig, type SlipwayConfig } from '../config.ts';
 import { GiteaClient } from '../gitea/client.ts';
 import { run } from '../util/exec.ts';
@@ -60,7 +63,51 @@ function gitSubcommandIndex(w: string[]): number {
   return -1;
 }
 
-function ghApiWrites(w: string[]): boolean {
+/** `gh api` options that take a separate value (so the endpoint is not confused with it). */
+const GH_API_OPTS_WITH_VALUE = new Set(['-X', '--method', '-H', '--header', '-f', '-F', '--field', '--raw-field', '--input',
+  '-q', '--jq', '-t', '--template', '--hostname', '-p', '--preview', '--cache']);
+
+function ghApiEndpoint(w: string[]): string | null {
+  for (let i = 2; i < w.length; i++) {
+    const a = w[i]!;
+    if (GH_API_OPTS_WITH_VALUE.has(a)) { i++; continue; }
+    if (a.startsWith('-')) continue;
+    return unquote(a);
+  }
+  return null;
+}
+
+const MUTATION = /\bmutation\b/;
+
+/**
+ * GraphQL always goes out as POST, so a write is told apart by the document: it writes if it contains a mutation.
+ * The query may sit in the command itself (`-f query=…`, a heredoc on `--input -`) or in a file
+ * (`--input q.json`, `-F query=@q.graphql`); an unreadable file counts as a write (fail closed).
+ */
+function graphqlWrites(w: string[], command: string, cwd: string): boolean {
+  if (MUTATION.test(command)) return true;
+  const files: string[] = [];
+  for (let i = 2; i < w.length; i++) {
+    const a = w[i]!;
+    if (a === '--input') files.push(unquote(w[i + 1] ?? ''));
+    else if (a.startsWith('--input=')) files.push(unquote(a.slice('--input='.length)));
+    const field = a === '-F' || a === '--field' ? unquote(w[i + 1] ?? '') : a.startsWith('--field=') ? unquote(a.slice('--field='.length)) : '';
+    const at = field.indexOf('=@');
+    if (at > 0) files.push(field.slice(at + 2));
+  }
+  for (const f of files) {
+    if (f === '-' || f === '') continue; // stdin: its text, if any, is in the command (heredoc), checked above
+    try {
+      if (MUTATION.test(readFileSync(resolve(cwd, f.replace(/^~(?=\/)/, homedir())), 'utf8'))) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+function ghApiWrites(w: string[], command: string, cwd: string): boolean {
+  if (ghApiEndpoint(w) === 'graphql') return graphqlWrites(w, command, cwd);
   for (let i = 2; i < w.length; i++) {
     const a = w[i]!;
     if ((a === '-X' || a === '--method') && WRITE_METHODS.test(w[i + 1] ?? '')) return true;
@@ -177,7 +224,7 @@ export async function decide(input: HookInput, env: HookEnv): Promise<Decision> 
         branch = sel === null ? env.currentBranch() : await env.githubPrHead(sel).catch(() => null);
       }
       d = await judgeBranch(branch, `"gh pr ${w[2]}"`, env);
-    } else if (w[0] === 'gh' && w[1] === 'api' && ghApiWrites(w)) {
+    } else if (w[0] === 'gh' && w[1] === 'api' && ghApiWrites(w, command, input.cwd)) {
       d = await judgeBranch(env.currentBranch(), 'writing to GitHub through "gh api"', env);
     }
     if (d.block) return d;

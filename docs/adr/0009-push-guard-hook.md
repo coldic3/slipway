@@ -13,7 +13,8 @@ For `git push`, `gh pr` writes and `gh api` writes in a registered repo, the hoo
 - **only closed PRs** → allowed. Promotion closes the Slipway PR, so this means "promoted"; a PR the reviewer closed counts the same.
 
 Pushes that cannot be narrowed to PR branches (`--all`, `--mirror`, tags, globs), a detached HEAD, an unknown GitHub PR head or an
-unreachable Slipway → blocked (fail closed). Promotion from the shell and reading Slipway's credentials are always blocked.
+unreachable Slipway → blocked (fail closed). `gh api graphql` always POSTs, so it counts as a write only when its document (inline,
+heredoc or `--input`/`@file`) contains a `mutation`; a document file it cannot read counts as a write. Promotion from the shell and reading Slipway's credentials are always blocked.
 
 ## Consequences
 After promotion the agent works with GitHub reviewers directly. Each guarded command costs one Slipway API call. Reusing a promoted
