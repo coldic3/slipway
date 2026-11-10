@@ -15,6 +15,9 @@ import { resolveRepo } from './context.ts';
  * - open PR → blocked, the work goes through Slipway first;
  * - no PR at all → blocked, the work has not been reviewed;
  * - only closed PRs (promoted, or deliberately closed) → allowed, the branch now lives on GitHub.
+ *
+ * Only writes that publish code or a PR are guarded: `git push`, `gh pr create/ready/merge`, and the `gh api` endpoints and
+ * GraphQL mutations that do the same. Reviews, comments, labels, issues and other API writes publish no code and pass.
  */
 export interface HookInput {
   tool_name: string;
@@ -37,8 +40,8 @@ export interface HookEnv {
   githubPrHead(ref: string): Promise<string | null>;
 }
 
-const GH_PR_WRITES = new Set(['create', 'edit', 'merge', 'close', 'reopen', 'ready', 'review', 'comment']);
-const WRITE_METHODS = /^(POST|PATCH|PUT|DELETE)$/i;
+/** `gh pr` commands that publish a PR or its code (open it, take it out of draft, merge it). */
+const GH_PR_PUBLISH = new Set(['create', 'ready', 'merge']);
 /** `git push` options that take a separate value. */
 const PUSH_OPTS_WITH_VALUE = new Set(['-o', '--push-option', '--repo', '--receive-pack', '--exec']);
 /** `gh pr` options that take a separate value (the positional PR selector must not be confused with them). */
@@ -79,13 +82,18 @@ function ghApiEndpoint(w: string[]): string | null {
 
 const MUTATION = /\bmutation\b/;
 
+/** GraphQL mutations that publish code or a PR; any other mutation (reviews, comments, threads, labels…) passes. */
+const PUBLISH_MUTATIONS = new Set(['createPullRequest', 'mergePullRequest', 'markPullRequestReadyForReview',
+  'enablePullRequestAutoMerge', 'enqueuePullRequest', 'revertPullRequest', 'updatePullRequestBranch', 'mergeBranch',
+  'createCommitOnBranch', 'createRef', 'updateRef', 'updateRefs']);
+
 /**
- * GraphQL always goes out as POST, so a write is told apart by the document: it writes if it contains a mutation.
- * The query may sit in the command itself (`-f query=…`, a heredoc on `--input -`) or in a file
- * (`--input q.json`, `-F query=@q.graphql`); an unreadable file counts as a write (fail closed).
+ * GraphQL always goes out as POST, so the document decides. Its text is the command itself (`-f query=…`, a heredoc on
+ * `--input -`) plus any document file (`--input q.json`, `-F query=@q.graphql`). It publishes when it has a mutation from
+ * PUBLISH_MUTATIONS; an unreadable file, or a mutation whose fields cannot be told, counts as publishing (fail closed).
+ * GitHub mutations all take `input:`, which is how their names are found.
  */
-function graphqlWrites(w: string[], command: string, cwd: string): boolean {
-  if (MUTATION.test(command)) return true;
+export function graphqlPublishes(w: string[], command: string, cwd: string): boolean {
   const files: string[] = [];
   for (let i = 2; i < w.length; i++) {
     const a = w[i]!;
@@ -95,26 +103,48 @@ function graphqlWrites(w: string[], command: string, cwd: string): boolean {
     const at = field.indexOf('=@');
     if (at > 0) files.push(field.slice(at + 2));
   }
+  let doc = command;
   for (const f of files) {
-    if (f === '-' || f === '') continue; // stdin: its text, if any, is in the command (heredoc), checked above
+    if (f === '-' || f === '') continue; // stdin: its text, if any, is in the command (heredoc)
     try {
-      if (MUTATION.test(readFileSync(resolve(cwd, f.replace(/^~(?=\/)/, homedir())), 'utf8'))) return true;
+      doc += '\n' + readFileSync(resolve(cwd, f.replace(/^~(?=\/)/, homedir())), 'utf8');
     } catch {
       return true;
     }
   }
-  return false;
+  if (!MUTATION.test(doc)) return false;
+  const names = [...doc.matchAll(/\b([A-Za-z_]\w*)\s*\(\s*input\s*:/g)].map((m) => m[1]!);
+  return names.length === 0 || names.some((n) => PUBLISH_MUTATIONS.has(n));
 }
 
-function ghApiWrites(w: string[], command: string, cwd: string): boolean {
-  if (ghApiEndpoint(w) === 'graphql') return graphqlWrites(w, command, cwd);
+/** The HTTP method `gh api` uses: the explicit one, else POST when it sends fields or a body, else GET. */
+function ghApiMethod(w: string[]): string {
+  let fields = false;
   for (let i = 2; i < w.length; i++) {
     const a = w[i]!;
-    if ((a === '-X' || a === '--method') && WRITE_METHODS.test(w[i + 1] ?? '')) return true;
-    if (/^(-X|--method=)(POST|PATCH|PUT|DELETE)$/i.test(a)) return true;
-    if (['-f', '-F', '--field', '--raw-field', '--input'].includes(a) || /^--(raw-)?field=/.test(a)) return true;
+    if (a === '-X' || a === '--method') return (w[i + 1] ?? '').toUpperCase();
+    const m = /^(?:-X|--method=)([A-Za-z]+)$/.exec(a);
+    if (m) return m[1]!.toUpperCase();
+    if (['-f', '-F', '--field', '--raw-field', '--input'].includes(a) || /^--(raw-)?field=/.test(a)) fields = true;
   }
-  return false;
+  return fields ? 'POST' : 'GET';
+}
+
+/** REST endpoints that publish code or a PR: open or merge a PR, update its branch, merge branches, write refs, git objects or files. */
+export function restPublishes(endpoint: string, method: string): boolean {
+  if (method === 'GET' || method === 'HEAD') return false;
+  const path = endpoint.replace(/^\/+/, '').replace(/\?.*$/, '');
+  const m = /^repos\/[^/]+\/[^/]+\/(.*)$/.exec(path);
+  if (!m) return false;
+  const rest = m[1]!.replace(/\/+$/, '');
+  if (rest === 'pulls') return method === 'POST';
+  return /^(pulls\/\d+\/(merge|update-branch)|merges|git\/(refs|commits|trees|blobs|tags)(\/.*)?|contents\/.+)$/.test(rest);
+}
+
+function ghApiPublishes(w: string[], command: string, cwd: string): boolean {
+  const endpoint = ghApiEndpoint(w);
+  if (endpoint === 'graphql') return graphqlPublishes(w, command, cwd);
+  return endpoint !== null && restPublishes(endpoint, ghApiMethod(w));
 }
 
 const unquote = (s: string) => s.replace(/^(['"])(.*)\1$/, '$2');
@@ -214,7 +244,7 @@ export async function decide(input: HookInput, env: HookEnv): Promise<Decision> 
       }
     } else if ((exe === 'slipway' && w[1] === 'promote') || exe === 'promote.sh') {
       d = { block: true, reason: 'Slipway: promotion from the shell is for the user. Use the slipway_promote tool (it requires the user\'s approval).' };
-    } else if (w[0] === 'gh' && w[1] === 'pr' && GH_PR_WRITES.has(w[2] ?? '')) {
+    } else if (w[0] === 'gh' && w[1] === 'pr' && GH_PR_PUBLISH.has(w[2] ?? '')) {
       const args = w.slice(3);
       let branch: string | null;
       if (w[2] === 'create') {
@@ -224,7 +254,7 @@ export async function decide(input: HookInput, env: HookEnv): Promise<Decision> 
         branch = sel === null ? env.currentBranch() : await env.githubPrHead(sel).catch(() => null);
       }
       d = await judgeBranch(branch, `"gh pr ${w[2]}"`, env);
-    } else if (w[0] === 'gh' && w[1] === 'api' && ghApiWrites(w, command, input.cwd)) {
+    } else if (w[0] === 'gh' && w[1] === 'api' && ghApiPublishes(w, command, input.cwd)) {
       d = await judgeBranch(env.currentBranch(), 'writing to GitHub through "gh api"', env);
     }
     if (d.block) return d;
