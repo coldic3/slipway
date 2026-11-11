@@ -37603,7 +37603,7 @@ function giteaUrlFor(port) {
 }
 
 // src/runtime/custom.ts
-import { dirname as dirname3, join as join8 } from "node:path";
+import { join as join8 } from "node:path";
 
 // src/paths.ts
 import { dirname as dirname2, join as join7 } from "node:path";
@@ -37617,7 +37617,7 @@ function customDir() {
 }
 
 // src/runtime/docker.ts
-import { dirname as dirname4, join as join9 } from "node:path";
+import { dirname as dirname3, join as join9 } from "node:path";
 var COMPOSE_FILE = join9(SLIPWAY_ROOT, "docker", "compose.yaml");
 
 // src/runtime/health.ts

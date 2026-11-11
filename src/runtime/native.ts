@@ -74,11 +74,15 @@ export async function ensureSecrets(bin: string, p: NativePaths): Promise<Secret
   return out;
 }
 
-export async function writeAppIni(bin: string, port: number, p: NativePaths = nativePaths()): Promise<void> {
+/** Writes app.ini from Slipway's settings. Returns true when its content changed (Gitea reads it only at start). */
+export async function writeAppIni(bin: string, port: number, p: NativePaths = nativePaths()): Promise<boolean> {
   const secrets = await ensureSecrets(bin, p);
   mkdirSync(p.data, { recursive: true });
   mkdirSync(p.log, { recursive: true });
-  writeFileSync(p.ini, renderIni(nativeSettings(port, p, secrets, userInfo().username)), { mode: 0o600 });
+  const ini = renderIni(nativeSettings(port, p, secrets, userInfo().username));
+  if (existsSync(p.ini) && readFileSync(p.ini, 'utf8') === ini) return false;
+  writeFileSync(p.ini, ini, { mode: 0o600 });
+  return true;
 }
 
 export function readPid(p: NativePaths = nativePaths()): number | undefined {

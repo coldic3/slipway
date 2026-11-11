@@ -47,8 +47,7 @@ export async function up(opts: UpOptions = {}): Promise<Instance> {
 
   if (prev && (await isRunning(prev))) {
     if (prev.port === port && (runtime === 'docker' || prev.giteaBin?.endsWith(`gitea-${GITEA_VERSION}`))) {
-      log(`already running at ${giteaUrlFor(port)}`);
-      if (runtime === 'native') await ensureGitleaks(log);
+      await refreshRunning(prev, log);
       return prev;
     }
     log('restarting Gitea (new port or Gitea version)');
@@ -73,6 +72,29 @@ export async function up(opts: UpOptions = {}): Promise<Instance> {
   saveInstance(instance);
   await retargetConfig(port, log);
   return instance;
+}
+
+/**
+ * `up` on a running Gitea of the right port and version: brings it in line with this Slipway (branding, settings and, for
+ * Docker, the compose definition) and restarts it only when something it reads at start changed. Without this, an updated
+ * Slipway kept serving the old instance, e.g. a container still mounting a branding path that no longer exists.
+ */
+async function refreshRunning(i: Instance, log: (m: string) => void): Promise<void> {
+  const brandingChanged = syncCustom();
+  if (i.runtime === 'docker') {
+    if (brandingChanged) log("restarting Gitea (Slipway's branding changed)");
+    await dockerUp(i.port, { recreate: brandingChanged });
+  } else {
+    if (!i.giteaBin) throw new Error('the instance has no Gitea binary recorded. Run: slipway down, then slipway up');
+    const iniChanged = await writeAppIni(i.giteaBin, i.port);
+    if (brandingChanged || iniChanged) {
+      log(`restarting Gitea (Slipway's ${brandingChanged ? 'branding' : 'settings'} changed)`);
+      await nativeStop();
+      await nativeStart(i.giteaBin, i.port);
+    }
+    await ensureGitleaks(log);
+  }
+  log(`running at ${giteaUrlFor(i.port)}`);
 }
 
 async function stop(i: Instance): Promise<void> {
