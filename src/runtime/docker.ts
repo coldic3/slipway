@@ -36,12 +36,17 @@ export function writeDockerEnv(port: number): void {
   writeFileSync(dockerEnvFile(), renderEnv(giteaSettings(port)), { mode: 0o600 });
 }
 
-export async function dockerUp(port: number): Promise<void> {
+/**
+ * `compose up`: also on a running stack, where compose recreates the container when its definition (image, mounts, settings) no
+ * longer matches the one it was created with. `recreate` forces that, e.g. for new templates, which Gitea reads only at start.
+ */
+export async function dockerUp(port: number, opts: { recreate?: boolean } = {}): Promise<void> {
   if ((await run('docker', ['version'])).code !== 0) {
     throw new Error('Docker is not running (or not installed). Start Docker, or use the default runtime without --docker.');
   }
   writeDockerEnv(port);
-  await runOk('docker', composeArgs(['up', '-d', '--wait']), { env: composeEnv(port), timeoutMs: 300_000 });
+  const args = ['up', '-d', '--wait', ...(opts.recreate ? ['--force-recreate'] : [])];
+  await runOk('docker', composeArgs(args), { env: composeEnv(port), timeoutMs: 300_000 });
 }
 
 export async function dockerDown(port: number, purge: boolean): Promise<void> {

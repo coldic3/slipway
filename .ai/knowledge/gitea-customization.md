@@ -16,6 +16,11 @@
   The passkey frame on sign-in is `[service] ENABLE_PASSKEY_AUTHENTICATION`.
 - Repo-header Watch/Star/Fork come from `templates/repo/header/{watch,star,fork}.tmpl`; empty overrides remove them.
 - Templates in `custom/templates` are loaded at startup (prod mode): after changing them, restart Gitea (`docker compose -p slipway restart gitea`). CSS/JS/images in `custom/public` are served live.
+- `slipway up` on a running Gitea syncs the branding copy and restarts Gitea only when it changed (native: also when app.ini
+  changed; Docker: `compose up --force-recreate`, and plain `compose up` recreates a container whose definition is outdated).
+  The copy in `~/.slipway/gitea/custom` is replaced in place, never removed: Docker bind-mounts that directory.
+- A container created by an older Slipway keeps its old mounts until it is recreated (Kevin's once mounted the removed
+  `docker/gitea-custom` and showed stock Gitea); before the fix, `up` returned early on a running instance and never recreated it.
 - Gitea serves `custom/public` assets with `Cache-Control: max-age=21600` (6 h): a changed `slipway.css` stays stale in browsers. Templates reference our assets with a content hash `?v=…`, stamped by `npm run build:brand` (`scripts/stamp-assets.mjs`); `tests/functional/brand-assets.test.ts` fails when a stamp is stale. Fresh Playwright browsers never show this bug.
 - Avatars (verified on Gitea 28.3, 2026-11-08): `[server] OFFLINE_MODE` defaults to true and also turns Gravatar off (the default of
   `[picture] DISABLE_GRAVATAR` follows it). With `OFFLINE_MODE=false` + `DISABLE_GRAVATAR=false`, user and commit-author avatars become
