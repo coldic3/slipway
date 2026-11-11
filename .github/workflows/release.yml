@@ -37,10 +37,19 @@ jobs:
         run: |
           npm pack
           echo "SHA256=$(sha256sum coldic3-slipway-$VERSION.tgz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+      # Every step below can be re-run after a partial failure: a release that exists is reused with its own tarball (so the
+      # tap, npm and the release keep one checksum), an unchanged formula is not committed, a published version is skipped.
       - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" "coldic3-slipway-$VERSION.tgz" --title "Slipway $VERSION" --generate-notes
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME exists: reusing its tarball"
+            gh release download "$GITHUB_REF_NAME" -p "coldic3-slipway-$VERSION.tgz" --clobber
+            echo "SHA256=$(sha256sum coldic3-slipway-$VERSION.tgz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          else
+            gh release create "$GITHUB_REF_NAME" "coldic3-slipway-$VERSION.tgz" --title "Slipway $VERSION" --generate-notes
+          fi
       - name: Update the Homebrew tap
         if: env.TAP_TOKEN != ''
         run: |
@@ -51,12 +60,20 @@ jobs:
           git config user.name "slipway-release"
           git config user.email "slipway-release@users.noreply.github.com"
           git add Formula/slipway.rb
-          git commit -m "slipway $VERSION"
-          git push
+          if git diff --cached --quiet; then
+            echo "The tap already has slipway $VERSION"
+          else
+            git commit -m "slipway $VERSION"
+            git push
+          fi
       # npm Trusted Publishing: set the repository variable NPM_TRUSTED_PUBLISHING=true once the package's trusted publisher
       # (this repo + release.yml) is configured on npmjs.com. Provenance is attached automatically. See docs/releasing.md.
       - name: Publish to npm
         if: vars.NPM_TRUSTED_PUBLISHING == 'true'
         run: |
+          if npm view "@coldic3/slipway@$VERSION" version --prefer-online >/dev/null 2>&1; then
+            echo "@coldic3/slipway@$VERSION is already on npm"
+            exit 0
+          fi
           npm install -g npm@11.6.2
           npm publish "coldic3-slipway-$VERSION.tgz" --access public
