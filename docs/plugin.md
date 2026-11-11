@@ -40,9 +40,13 @@ Restart Claude Code if asked. The plugin brings:
 - **MCP tools** `slipway_status`, `slipway_start_task`, `slipway_repo_conventions`, `slipway_push`, `slipway_open_pr`, `slipway_update_pr`,
   `slipway_review_comments`, `slipway_reply`, `slipway_promote`;
 - **skills** `slipway:start-task`, `slipway:open-pr`, `slipway:fix-review`, `slipway:promote`;
-- **a guardrail hook**: in Slipway repos it stops `git push` and publishing a GitHub PR (`gh pr create/ready/merge` and the matching `gh api` calls) for a
-  branch that has an open Slipway PR or none at all, and points Claude to the Slipway tools instead. Once the branch's Slipway PR is
-  closed (promotion closes it), the branch lives on GitHub: Claude may push to it and answer GitHub reviewers directly (ADR 0009). Reviews, comments and other GitHub writes that publish no code are never blocked. It also stops `slipway promote` from Claude's shell: Claude promotes only through `slipway_promote`.
+- **a guardrail hook**: in Slipway repos it stops Claude from publishing its task's work on GitHub before review (`git push` to
+  GitHub, `gh pr create/ready/merge` and the matching `gh api` calls) and points it to the Slipway tools. When Slipway cannot settle
+  a push (a branch outside the task, `main`, tags, deleting a branch, Slipway not running), it asks you instead of refusing. Once the
+  branch's Slipway PR is closed (promotion closes it), the branch lives on GitHub: Claude may push to it and answer GitHub reviewers
+  directly. Reviews, comments and other GitHub writes that publish no code, and pushes to other remotes, are never stopped. It also
+  stops `slipway promote` from Claude's shell (Claude promotes only through `slipway_promote`) and reads of Slipway's credentials
+  (ADR 0009, 0013).
 
 On first use, the plugin creates its own Gitea user for this machine (`claude-<hostname>`, or `SLIPWAY_CLAUDE_USER`).
 Its PRs and replies show under that name, and it can push branches but never merge.

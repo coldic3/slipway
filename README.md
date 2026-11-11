@@ -120,7 +120,7 @@ The full guide (the review loop, the plugin's tools and skills, troubleshooting)
 | Exact promotion | Only with your approval on the current head; the commits you reviewed are the commits that reach GitHub. |
 | Secret scan | gitleaks fails closed: a finding, an error or a missing scanner blocks promotion. |
 | No stored GitHub token | The token is read from `gh` at promotion time and never written to disk. |
-| Push guard | The plugin's hook blocks `git push` and `gh pr create` to GitHub for branches whose Slipway pull request is open or missing. |
+| Push guard | The plugin's hook blocks `git push` and `gh pr create` to GitHub for the task's branch until its Slipway pull request is promoted, and asks you when it cannot tell. |
 
 Slipway is a workflow tool, not a sandbox: the agent runs as your OS user and could bypass it on purpose. Avatars are loaded from
 Gravatar (an e-mail hash is sent to gravatar.com).

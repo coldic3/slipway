@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { git } from '../../src/util/exec.ts';
 import { E2E } from './helpers/env.ts';
 import { join } from 'node:path';
-import { addInlineComment, claudeAmends, claudeCommits, claudeRebasesOnto, hookBlocks, humanPushesToGitHubMain, config, loginAsReviewer, makeRepo, mockGitHub, reviewerApi, prComments, submitReview } from './helpers/slipway.ts';
+import { addInlineComment, claudeAmends, claudeCommits, claudeRebasesOnto, hookDecision, humanPushesToGitHubMain, config, loginAsReviewer, makeRepo, mockGitHub, reviewerApi, prComments, submitReview } from './helpers/slipway.ts';
 import { FakeClaude } from './helpers/mcp.ts';
 
 const TEMPLATE = '## Summary\n\n<!-- what and why -->\n\n## Ticket\n\n<!-- DRY-123 -->\n';
@@ -73,9 +73,10 @@ test('one Claude session: open PR → review in Gitea UI → fix → approve →
     await reviewerApi().editPull(E2E.org, 'flow', pr, { title: 'feat: add a friendly greeting' });
 
     // While the Slipway PR is open, the hook keeps GitHub out of reach.
-    expect(await hookBlocks(wt, 'git push origin agent/1-greeting')).toBe(true);
-    expect(await hookBlocks(wt, 'gh pr create --title x --body y')).toBe(true);
-    expect(await hookBlocks(wt, 'gh pr comment -b hi')).toBe(false); // comments publish no code
+    expect(await hookDecision(wt, 'git push origin agent/1-greeting')).toBe('deny');
+    expect(await hookDecision(wt, 'gh pr create --title t --body b')).toBe('deny');
+    expect(await hookDecision(wt, 'git push review agent/1-greeting')).toBe('allow'); // the review Gitea is not GitHub
+    expect(await hookDecision(wt, 'gh pr comment 70 -b hi')).toBe('allow'); // discussion publishes no code
 
     // Kevin: "promote".
     const promoted = await claude.ok('slipway_promote', { cwd: wt });
@@ -95,10 +96,10 @@ test('one Claude session: open PR → review in Gitea UI → fix → approve →
     expect(await prComments('flow', pr)).toContainEqual(expect.stringContaining(`Promoted to GitHub: ${gh.html_url}`));
 
     // Promoted (Slipway PR closed): the branch now lives on GitHub, so follow-ups for human reviewers go there directly (ADR 0009).
-    expect(await hookBlocks(wt, 'git push origin agent/1-greeting')).toBe(false);
-    expect(await hookBlocks(wt, 'git push')).toBe(false);
-    // A branch without any Slipway PR is still blocked.
-    expect(await hookBlocks(wt, 'git push origin agent/2-unreviewed')).toBe(true);
+    expect(await hookDecision(wt, 'git push origin agent/1-greeting')).toBe('allow');
+    expect(await hookDecision(wt, 'git push')).toBe('allow');
+    // A branch without any Slipway PR that is not this task's: the user is asked (ADR 0013).
+    expect(await hookDecision(wt, 'git push origin agent/2-unreviewed')).toBe('ask');
   } finally {
     await claude.close();
   }

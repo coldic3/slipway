@@ -25,13 +25,14 @@ export async function slipwayOk(args: string[], opts: { cwd?: string; env?: Reco
   return r.stdout;
 }
 
-/** Runs the plugin's bundled PreToolUse hook as Claude Code would for a Bash command; true when it blocks (exit 2). */
-export async function hookBlocks(cwd: string, command: string): Promise<boolean> {
+/** Runs the plugin's bundled PreToolUse hook as Claude Code would for a Bash command: deny (exit 2), ask (JSON) or allow. */
+export async function hookDecision(cwd: string, command: string): Promise<'allow' | 'ask' | 'deny'> {
   const r = await run('node', [join(ROOT, 'plugin', 'dist', 'slipway-hook.mjs')], {
     env: e2eEnv(), input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd }), timeoutMs: 30_000,
   });
-  if (r.code !== 0 && r.code !== 2) throw new Error(`hook failed (${r.code}): ${r.stderr}`);
-  return r.code === 2;
+  if (r.code === 2) return 'deny';
+  if (r.code !== 0) throw new Error(`hook failed (${r.code}): ${r.stderr}`);
+  return r.stdout.trim() ? JSON.parse(r.stdout).hookSpecificOutput.permissionDecision : 'allow';
 }
 
 export interface RepoFixture { name: string; dir: string; origin: string }

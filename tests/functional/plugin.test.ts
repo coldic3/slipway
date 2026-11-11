@@ -30,18 +30,24 @@ describe('Slipway plugin', () => {
     }
   });
 
-  it('the bundled hook blocks git push in a registered repo (exit 2) and ignores others', async () => {
+  it('the bundled hook asks (JSON on stdout) or denies (exit 2) in a registered repo and ignores others', async () => {
     const home = mkdtempSync(join(tmpdir(), 'dd-home-'));
     const repo = mkdtempSync(join(tmpdir(), 'dd-repo-'));
     await run('git', ['init', '-q', repo]);
     writeFileSync(join(home, 'config.json'), JSON.stringify({ giteaUrl: 'http://g', admin: { username: 'admin', password: 'p', token: 't' }, reviewer: { username: 'slipway', password: 'p', token: 't' }, org: 'repos', repos: { r: { path: repo, base: 'main', github: 'k/r' } } }));
-    const hook = (cwd: string) => run('node', [join(PLUGIN, 'dist', 'slipway-hook.mjs')], {
-      env: { ...process.env, SLIPWAY_HOME: home }, input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git push origin main' }, cwd }),
+    const hook = (cwd: string, command = 'git push origin main') => run('node', [join(PLUGIN, 'dist', 'slipway-hook.mjs')], {
+      env: { ...process.env, SLIPWAY_HOME: home }, input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd }),
     });
-    const blocked = await hook(repo);
-    expect(blocked.code).toBe(2);
-    expect(blocked.stderr).toMatch(/slipway_push/);
-    expect((await hook(tmpdir())).code).toBe(0);
+    // Slipway (http://g) cannot be asked about "main": the user decides.
+    const asked = await hook(repo);
+    expect(asked.code).toBe(0);
+    expect(JSON.parse(asked.stdout)).toEqual({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: expect.stringMatching(/slipway up/) } });
+    const denied = await hook(repo, 'slipway promote r 1');
+    expect(denied.code).toBe(2);
+    expect(denied.stderr).toMatch(/slipway_promote/);
+    const outside = await hook(tmpdir());
+    expect(outside.code).toBe(0);
+    expect(outside.stdout).toBe('');
   });
 
   it('the committed bundles are up to date with src/', async () => {
