@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { VERSION } from '../version.ts';
-import { openPr, promoteTool, startTask, push, reply, repoConventions, reviewComments, status, updatePr, type ToolResult } from './tools.ts';
+import { closePr, listPrs, openPr, prDetails, promoteTool, startTask, push, reply, repoConventions, reviewComments, status, updatePr, type ToolResult } from './tools.ts';
 
 const cwd = z.string().optional().describe('Absolute path of your current working directory (the clone or the git worktree you work in). Always pass it.');
 const pr = z.number().int().positive().optional().describe('Slipway PR number; defaults to the open PR of the current branch.');
@@ -38,14 +38,36 @@ export function createServer(): McpServer {
   }, async (a) => asContent(await push(a)));
 
   server.registerTool('slipway_open_pr', {
-    description: 'Push the current branch and open a Slipway PR (or return the existing one). Title and body must follow slipway_repo_conventions.',
-    inputSchema: { cwd, title: z.string().min(1), body: z.string(), base: z.string().optional() },
+    description: 'Push the current branch and open a Slipway PR (or return the existing one). Title and body must follow slipway_repo_conventions. For a stacked PR pass `base` = the parent PR\'s branch.',
+    inputSchema: { cwd, title: z.string().min(1), body: z.string(), base: z.string().optional().describe('Target branch in Slipway (default: the repo base). For a stack: the parent PR\'s branch.') },
   }, async (a) => asContent(await openPr(a)));
 
   server.registerTool('slipway_update_pr', {
-    description: "Change the PR title and/or description. Refused once the user approved the PR (then only the user edits it).",
-    inputSchema: { cwd, pr, title: z.string().min(1).optional(), body: z.string().optional() },
+    description: "Change the PR title, description and/or target branch (base), e.g. to retarget a stacked PR after a split. Title/description are refused once the user approved the PR (then only the user edits them); the base can always change, but then the PR needs a fresh approval.",
+    inputSchema: {
+      cwd, pr, title: z.string().min(1).optional(), body: z.string().optional(),
+      base: z.string().min(1).optional().describe('New target branch in Slipway (must exist there)'),
+    },
   }, async (a) => asContent(await updatePr(a)));
+
+  server.registerTool('slipway_close_pr', {
+    description: 'Close a Slipway PR that is no longer needed (e.g. superseded after a split). Posts the reason on the PR first. The user can reopen it in Gitea.',
+    inputSchema: {
+      cwd,
+      pr: z.number().int().positive().describe('Slipway PR number to close (required)'),
+      reason: z.string().min(1).describe('Why, posted on the PR, e.g. "Superseded by #7 and #8"'),
+    },
+  }, async (a) => asContent(await closePr(a)));
+
+  server.registerTool('slipway_list_prs', {
+    description: 'List the Slipway PRs of this repo: number, title, head → base, state (in-review / changes-requested / approved / closed / promoted) and unresolved comments. Use it to check a stack or a split instead of asking the user for screenshots.',
+    inputSchema: { cwd, state: z.enum(['open', 'closed', 'all']).optional().describe('Default: open') },
+  }, async (a) => asContent(await listPrs(a)));
+
+  server.registerTool('slipway_pr', {
+    description: 'Everything about one Slipway PR as the user sees it in Gitea: head/base, state, description, commits, files, all reviews, inline comments (resolved or not), conversation and timeline (base changes, force-pushes, close/reopen). diff=true adds the diff.',
+    inputSchema: { cwd, pr, diff: z.boolean().optional() },
+  }, async (a) => asContent(await prDetails(a)));
 
   server.registerTool('slipway_review_comments', {
     description: 'Unresolved review feedback on the PR: the latest review summary and each open inline thread (comment_id, file:line, text, diff context).',

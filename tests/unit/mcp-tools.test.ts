@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SlipwayConfig } from '../../src/config.ts';
 import { GiteaError } from '../../src/gitea/client.ts';
 import { resetEnrollmentCache } from '../../src/mcp/enroll.ts';
-import { openPr, promoteTool, push, reply, resetIdentityCheck, reviewComments, status, updatePr, type ToolDeps } from '../../src/mcp/tools.ts';
+import { closePr, listPrs, openPr, prDetails, promoteTool, push, reply, resetIdentityCheck, reviewComments, status, updatePr, type ToolDeps } from '../../src/mcp/tools.ts';
 
 const config = (): SlipwayConfig => ({
   giteaUrl: 'http://g', admin: { username: 'admin', password: 'a', token: 'at' }, reviewer: { username: 'slipway', password: 'p', token: 'ot' }, org: 'repos',
@@ -12,12 +12,20 @@ const config = (): SlipwayConfig => ({
 
 const pull = { number: 7, title: 'Add x', body: 'b', state: 'open', html_url: 'http://g/slipway/demo/pulls/7', head: { ref: 'agent/7-x', sha: 'h1' }, base: { ref: 'main' } };
 
-function deps(over: { reviews?: any[]; pulls?: any[]; token?: () => Promise<string>; promoteResult?: any; syncFails?: boolean } = {}) {
+function deps(over: { reviews?: any[]; pulls?: any[]; token?: () => Promise<string>; promoteResult?: any; syncFails?: boolean; timeline?: any[]; branches?: string[]; pr?: any; comments?: any[] } = {}) {
   const calls: string[] = [];
   const gitea = {
     version: vi.fn(async () => ({ version: '28.3.0' })),
     listPulls: vi.fn(async () => over.pulls ?? [pull]),
-    getPull: vi.fn(async () => pull),
+    getPull: vi.fn(async () => over.pr ?? pull),
+    timeline: vi.fn(async () => over.timeline ?? []),
+    branchExists: vi.fn(async (_o: string, _r: string, b: string) => (over.branches ?? ['main', 'agent/6-parent']).includes(b)),
+    pullCommits: vi.fn(async () => [{ sha: 'c1aaaaaaaa', commit: { message: 'feat: x\n\nbody' } }]),
+    pullFiles: vi.fn(async () => [{ filename: 'src/x.ts', status: 'added', additions: 3, deletions: 0 }]),
+    listComments: vi.fn(async () => over.comments ?? []),
+    comment: vi.fn(async () => ({ id: 1 })),
+    allReviewComments: vi.fn(async () => []),
+    pullDiff: vi.fn(async () => 'diff --git a/x b/x\n' + 'x'.repeat(200_000)),
     listReviews: vi.fn(async () => over.reviews ?? []),
     editPull: vi.fn(async () => pull),
     unresolvedComments: vi.fn(async () => [
@@ -159,4 +167,98 @@ describe('MCP tools', () => {
     expect(calls).toEqual(['sync', 'push']);
     expect(r.text).toMatch(/Warning: Slipway main was not updated from GitHub.*offline/);
   });
+
+  const approvedAt = (t: string) => [{ user: { login: 'slipway' }, state: 'APPROVED', commit_id: 'h1', dismissed: false, submitted_at: t }];
+
+  it('update_pr retargets the PR and says how big the diff is now', async () => {
+    const { d, gitea } = deps();
+    gitea.getPull.mockResolvedValueOnce({ ...pull, base: { ref: 'agent/6-parent' }, changed_files: 4, additions: 10, deletions: 2 });
+    const r = await updatePr({ base: 'agent/6-parent' }, d);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(gitea.editPull).toHaveBeenCalledWith('repos', 'demo', 7, { base: 'agent/6-parent' });
+    expect(r.text).toMatch(/main → agent\/6-parent/);
+    expect(r.text).toMatch(/1 commit\(s\), 4 file\(s\) \(\+10\/−2\)/);
+    expect(r.text).not.toMatch(/approve/i);
+  });
+
+  it('update_pr may retarget an approved PR and says the approval no longer counts', async () => {
+    const { d, gitea } = deps({ reviews: approvedAt('2026-11-12T10:00:00Z') });
+    const r = await updatePr({ base: 'agent/6-parent' }, d);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(gitea.editPull).toHaveBeenCalled();
+    expect(r.text).toMatch(/approval no longer counts/);
+  });
+
+  it('update_pr on an approved PR refuses the whole call when it also sets the title', async () => {
+    const { d, gitea } = deps({ reviews: approvedAt('2026-11-12T10:00:00Z') });
+    const r = await updatePr({ base: 'agent/6-parent', title: 'x' }, d);
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/nothing was changed[\s\S]*base alone/);
+    expect(gitea.editPull).not.toHaveBeenCalled();
+  });
+
+  it('update_pr refuses a base that is the head itself or missing in Slipway', async () => {
+    const { d, gitea } = deps();
+    expect((await updatePr({ base: 'agent/7-x' }, d)).text).toMatch(/own branch/);
+    expect((await updatePr({ base: 'feat/nope' }, d)).text).toMatch(/does not exist in Slipway/);
+    expect(gitea.editPull).not.toHaveBeenCalled();
+  });
+
+  it('update_pr refuses closed PRs', async () => {
+    const { d } = deps({ pr: { ...pull, state: 'closed' } });
+    expect((await updatePr({ pr: 7, base: 'agent/6-parent' }, d)).text).toMatch(/is closed/);
+  });
+
+  it('an approval from before the last base change does not count (status shows why)', async () => {
+    const { d } = deps({ reviews: approvedAt('2026-11-12T10:00:00Z'), timeline: [{ type: 'change_target_branch', created_at: '2026-11-12T11:00:00Z', old_ref: 'main', new_ref: 'agent/6-parent' }] });
+    const r = await status({}, d);
+    expect(r.text).toMatch(/State: in-review \(approved before the base changed/);
+    expect((await updatePr({ title: 'now allowed' }, d)).isError).toBeFalsy();
+  });
+
+  it('open_pr validates the base', async () => {
+    const { d, gitea } = deps({ pulls: [] });
+    expect((await openPr({ title: 't', body: 'b', base: 'feat/nope' }, d)).text).toMatch(/does not exist/);
+    expect((await openPr({ title: 't', body: 'b', base: 'agent/6-parent' }, d)).isError).toBeFalsy();
+    expect(gitea.createPull).toHaveBeenCalledWith('repos', 'demo', expect.objectContaining({ base: 'agent/6-parent' }));
+  });
+
+  it('close_pr posts the reason, then closes; a closed PR is a no-op', async () => {
+    const { d, gitea } = deps();
+    const r = await closePr({ pr: 7, reason: 'Superseded by #8 and #9' }, d);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(gitea.comment).toHaveBeenCalledWith('repos', 'demo', 7, 'Closed by claude-mac: Superseded by #8 and #9');
+    expect(gitea.editPull).toHaveBeenCalledWith('repos', 'demo', 7, { state: 'closed' });
+    expect(gitea.comment.mock.invocationCallOrder[0]!).toBeLessThan(gitea.editPull.mock.invocationCallOrder[0]!);
+    const closed = deps({ pr: { ...pull, state: 'closed' } });
+    expect((await closePr({ pr: 7, reason: 'x' }, closed.d)).text).toMatch(/already closed/);
+    expect(closed.gitea.editPull).not.toHaveBeenCalled();
+    expect((await closePr({ pr: 7, reason: '  ' }, d)).isError).toBe(true);
+  });
+
+  it('list_prs shows head → base, state and unresolved count; closed PRs show promotion', async () => {
+    const { d } = deps({ pulls: [pull, { ...pull, number: 8, title: 'Child', head: { ref: 'agent/8-y', sha: 'h8' }, base: { ref: 'agent/7-x' } }] });
+    const r = await listPrs({}, d);
+    expect(r.text).toMatch(/#7 Add x · agent\/7-x → main · in-review · unresolved: 2 · \(this branch\)/);
+    expect(r.text).toMatch(/#8 Child · agent\/8-y → agent\/7-x · in-review/);
+    const closed = deps({ pulls: [{ ...pull, state: 'closed' }], comments: [{ id: 1, body: '🚢 Promoted to GitHub: https://github.com/kevin/demo/pull/5', user: { login: 'claude-mac' }, created_at: 't' }] });
+    expect((await listPrs({ state: 'closed' }, closed.d)).text).toMatch(/promoted \(https:\/\/github.com\/kevin\/demo\/pull\/5\)/);
+  });
+
+  it('pr shows base/head, description, commits, files, reviews, comments and timeline; the diff is cut', async () => {
+    const { d } = deps({
+      reviews: approvedAt('2026-11-12T10:00:00Z'),
+      comments: [{ id: 1, body: 'Closed by x: y', user: { login: 'claude-mac' }, created_at: '2026-11-12T09:00:00Z' }],
+      timeline: [
+        { type: 'change_target_branch', created_at: '2026-11-12T11:00:00Z', user: { login: 'claude-mac' }, old_ref: 'main', new_ref: 'agent/6-parent' },
+        { type: 'pull_push', created_at: '2026-11-12T11:01:00Z', user: { login: 'claude-mac' }, body: '{"is_force_push":true,"commit_ids":["aaaaaaaaaa","bbbbbbbbbb"]}' },
+      ],
+    });
+    const r = await prDetails({ diff: true }, d);
+    expect(r.isError, r.text).toBeFalsy();
+    for (const re of [/Head: agent\/7-x \(h1\) → Base: main/, /## Description\nb/, /c1aaaaaa feat: x$/m, /added src\/x\.ts \(\+3\/−0\)/,
+      /slipway: APPROVED at h1/, /Closed by x: y/, /base main → agent\/6-parent/, /force-pushed aaaaaaaa → bbbbbbbb/,
+      /approved before the base changed/, /diff cut at 100000/]) expect(r.text).toMatch(re);
+  });
 });
+
