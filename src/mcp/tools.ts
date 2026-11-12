@@ -16,6 +16,7 @@ import { startTaskWorktree } from './start-task.ts';
 import { pushBranch, type PushOptions } from './push.ts';
 import { syncBase, type SyncBaseOptions } from '../setup/sync.ts';
 import { ensureRunning } from '../runtime/index.ts';
+import { giteaHealthy } from '../runtime/health.ts';
 
 export interface ToolResult { text: string; isError?: boolean }
 
@@ -31,8 +32,8 @@ export interface ToolDeps {
   syncBase: (o: SyncBaseOptions) => Promise<void>;
   pushBranch: (o: PushOptions) => Promise<{ ok: boolean; message: string }>;
   promote: (opts: PromoteOptions, ctx: { config: SlipwayConfig; actor: Account; token: string }) => Promise<PromoteResult>;
-  /** Starts the native Gitea if it is down (e.g. after a reboot, ADR 0002). */
-  ensureGitea?: () => Promise<void>;
+  /** Starts the native Gitea if it is down (e.g. after a reboot, ADR 0002); in a Docker sandbox, checks the host's is reachable. */
+  ensureGitea?: (config: SlipwayConfig) => Promise<void>;
 }
 
 export const defaultToolDeps: ToolDeps = {
@@ -46,8 +47,14 @@ export const defaultToolDeps: ToolDeps = {
   syncBase,
   pushBranch,
   promote: (opts, ctx) => runPromote(opts, defaultPromoteDeps((m) => console.error(`slipway: ${m}`), ctx.token, ctx.actor)),
-  ensureGitea: ensureRunning,
+  ensureGitea: (config) => (config.sandbox ? sandboxReachable(config) : ensureRunning()),
 };
+
+/** In a Docker sandbox Gitea runs on the host (ADR 0015): nothing to start here, only to reach. */
+async function sandboxReachable(config: SlipwayConfig): Promise<void> {
+  if (await giteaHealthy(config.giteaUrl)) return;
+  throw new Error(`Slipway's Gitea is not reachable from this sandbox at ${config.giteaUrl}. Ask the user to run on the host: slipway up, then slipway sbx setup ${config.sandbox}`);
+}
 
 interface Session {
   config: SlipwayConfig;
@@ -75,10 +82,10 @@ async function session(args: CwdArg, d: ToolDeps): Promise<Session> {
   try {
     config = d.loadConfig();
   } catch {
-    throw new Error('Slipway is not set up. Ask the user to run: slipway init');
+    throw new Error(notSetUp());
   }
   const repo = await d.resolveRepo(cwdOf(args), config);
-  await d.ensureGitea?.();
+  await d.ensureGitea?.(config);
   // A saved identity Gitea no longer accepts (e.g. the instance was reset) is dropped and re-enrolled.
   if (config.claude && !identityChecked) {
     try {
@@ -99,6 +106,14 @@ async function session(args: CwdArg, d: ToolDeps): Promise<Session> {
     username: claudeUsername(d.hostname(), slipwayEnv('CLAUDE_USER')),
   });
   return { config, repo, claude, gitea: d.gitea(config, claude.token), owner: config.org, approver: config.reviewer.username };
+}
+
+/** Docker Sandboxes set SANDBOX_NAME; the config is copied in from the host there (ADR 0015). */
+function notSetUp(): string {
+  const sandbox = process.env.SANDBOX_NAME;
+  return sandbox
+    ? `Slipway is not set up in this Docker sandbox. Ask the user to run on the host: slipway sbx setup ${sandbox}`
+    : 'Slipway is not set up. Ask the user to run: slipway init';
 }
 
 /** Runs a tool body; any thrown error becomes a readable tool error (never a stack trace with secrets). */
@@ -168,7 +183,7 @@ export function status(args: CwdArg, d: ToolDeps = defaultToolDeps): Promise<Too
     const s = await session(args, d);
     const version = await s.gitea.version().then((v) => v.version, () => 'unreachable');
     const lines = [
-      `Gitea: ${s.config.giteaUrl} (${version})`,
+      `Gitea: ${s.config.webUrl ?? s.config.giteaUrl} (${version})`,
       `Repo: ${s.repo.name} (GitHub ${s.repo.entry.github}, base ${s.repo.entry.base})`,
       `You are Gitea user: ${s.claude.username}`,
       `Branch: ${s.repo.branch ?? '(detached HEAD)'}`,
@@ -187,7 +202,12 @@ export function status(args: CwdArg, d: ToolDeps = defaultToolDeps): Promise<Too
 
 export function repoConventions(args: CwdArg, d: ToolDeps = defaultToolDeps): Promise<ToolResult> {
   return tool(async () => {
-    const config = d.loadConfig();
+    let config: SlipwayConfig;
+    try {
+      config = d.loadConfig();
+    } catch {
+      throw new Error(notSetUp());
+    }
     const repo = await d.resolveRepo(cwdOf(args), config);
     const c = collectConventions(repo.worktree);
     const header = c.usedFallbackTemplate

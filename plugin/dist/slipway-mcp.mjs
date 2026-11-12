@@ -37238,7 +37238,7 @@ function bearerAuthArgs(urlPrefix, token) {
 import { existsSync as existsSync2 } from "node:fs";
 
 // src/runtime/downloads.ts
-import { join as join3 } from "node:path";
+import { dirname, join as join3 } from "node:path";
 var GITEA_VERSION = "28.3.0";
 var GITLEAKS_VERSION = "8.30.1";
 var GITEA = {
@@ -37444,7 +37444,8 @@ function defaultPromoteDeps(log, token, actor) {
     originHasBranch,
     scan: (dir, range) => scanSecrets(dir, range),
     runTests: runShell,
-    originAuth: (dir) => githubOriginAuth(dir, token),
+    // In a Docker sandbox the sbx proxy adds the GitHub login to github.com requests (ADR 0015); the token here is a placeholder.
+    originAuth: (dir) => config2.sandbox ? Promise.resolve([]) : githubOriginAuth(dir, token),
     log
   };
 }
@@ -37512,20 +37513,20 @@ function collectConventions(root) {
 
 // src/mcp/context.ts
 import { existsSync as existsSync4, realpathSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname as dirname2, resolve } from "node:path";
 var NotRegisteredError = class extends Error {
-  constructor(where) {
-    super(`${where} is not a Slipway repo. Ask the user to run: slipway repo add <path-to-the-clone>`);
+  constructor(where, sandbox) {
+    super(sandbox ? `${where} is not a Slipway repo. Ask the user to run on the host: slipway repo add <path-to-the-clone>, then slipway sbx setup ${sandbox}` : `${where} is not a Slipway repo. Ask the user to run: slipway repo add <path-to-the-clone>`);
   }
 };
 var real = (p) => existsSync4(p) ? realpathSync(p) : resolve(p);
 async function resolveRepo(cwd2, config2) {
   const top = await run("git", ["rev-parse", "--show-toplevel"], { cwd: cwd2 });
-  if (top.code !== 0) throw new NotRegisteredError(cwd2);
+  if (top.code !== 0) throw new NotRegisteredError(cwd2, config2.sandbox);
   const common = (await run("git", ["rev-parse", "--git-common-dir"], { cwd: cwd2 })).stdout.trim();
-  const mainClone = real(dirname(resolve(cwd2, common)));
+  const mainClone = real(dirname2(resolve(cwd2, common)));
   const found = Object.entries(config2.repos).find(([, r]) => real(r.path) === mainClone);
-  if (!found) throw new NotRegisteredError(mainClone);
+  if (!found) throw new NotRegisteredError(mainClone, config2.sandbox);
   const head = (await run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: cwd2 })).stdout.trim();
   return { name: found[0], entry: found[1], worktree: top.stdout.trim(), branch: head && head !== "HEAD" ? head : null };
 }
@@ -37682,9 +37683,9 @@ function giteaUrlFor(port) {
 import { join as join8 } from "node:path";
 
 // src/paths.ts
-import { dirname as dirname2, join as join7 } from "node:path";
+import { dirname as dirname3, join as join7 } from "node:path";
 import { fileURLToPath } from "node:url";
-var SLIPWAY_ROOT = join7(dirname2(fileURLToPath(import.meta.url)), "..");
+var SLIPWAY_ROOT = join7(dirname3(fileURLToPath(import.meta.url)), "..");
 
 // src/runtime/custom.ts
 var SHIPPED_CUSTOM = join8(SLIPWAY_ROOT, "gitea");
@@ -37693,7 +37694,7 @@ function customDir() {
 }
 
 // src/runtime/docker.ts
-import { dirname as dirname3, join as join9 } from "node:path";
+import { dirname as dirname4, join as join9 } from "node:path";
 var COMPOSE_FILE = join9(SLIPWAY_ROOT, "docker", "compose.yaml");
 
 // src/runtime/health.ts
@@ -37838,8 +37839,12 @@ var defaultToolDeps = {
   syncBase,
   pushBranch,
   promote: (opts, ctx) => promote(opts, defaultPromoteDeps((m) => console.error(`slipway: ${m}`), ctx.token, ctx.actor)),
-  ensureGitea: ensureRunning
+  ensureGitea: (config2) => config2.sandbox ? sandboxReachable(config2) : ensureRunning()
 };
+async function sandboxReachable(config2) {
+  if (await giteaHealthy(config2.giteaUrl)) return;
+  throw new Error(`Slipway's Gitea is not reachable from this sandbox at ${config2.giteaUrl}. Ask the user to run on the host: slipway up, then slipway sbx setup ${config2.sandbox}`);
+}
 var identityChecked = false;
 var cwdOf = (a) => a.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 async function session(args, d) {
@@ -37847,10 +37852,10 @@ async function session(args, d) {
   try {
     config2 = d.loadConfig();
   } catch {
-    throw new Error("Slipway is not set up. Ask the user to run: slipway init");
+    throw new Error(notSetUp());
   }
   const repo = await d.resolveRepo(cwdOf(args), config2);
-  await d.ensureGitea?.();
+  await d.ensureGitea?.(config2);
   if (config2.claude && !identityChecked) {
     try {
       await d.gitea(config2, config2.claude.token).req("GET", "/user");
@@ -37869,6 +37874,10 @@ async function session(args, d) {
     username: claudeUsername(d.hostname(), slipwayEnv("CLAUDE_USER"))
   });
   return { config: config2, repo, claude, gitea: d.gitea(config2, claude.token), owner: config2.org, approver: config2.reviewer.username };
+}
+function notSetUp() {
+  const sandbox = process.env.SANDBOX_NAME;
+  return sandbox ? `Slipway is not set up in this Docker sandbox. Ask the user to run on the host: slipway sbx setup ${sandbox}` : "Slipway is not set up. Ask the user to run: slipway init";
 }
 async function tool(fn) {
   try {
@@ -37924,7 +37933,7 @@ function status(args, d = defaultToolDeps) {
     const s = await session(args, d);
     const version2 = await s.gitea.version().then((v) => v.version, () => "unreachable");
     const lines = [
-      `Gitea: ${s.config.giteaUrl} (${version2})`,
+      `Gitea: ${s.config.webUrl ?? s.config.giteaUrl} (${version2})`,
       `Repo: ${s.repo.name} (GitHub ${s.repo.entry.github}, base ${s.repo.entry.base})`,
       `You are Gitea user: ${s.claude.username}`,
       `Branch: ${s.repo.branch ?? "(detached HEAD)"}`
@@ -37942,7 +37951,12 @@ function status(args, d = defaultToolDeps) {
 }
 function repoConventions(args, d = defaultToolDeps) {
   return tool(async () => {
-    const config2 = d.loadConfig();
+    let config2;
+    try {
+      config2 = d.loadConfig();
+    } catch {
+      throw new Error(notSetUp());
+    }
     const repo = await d.resolveRepo(cwdOf(args), config2);
     const c = collectConventions(repo.worktree);
     const header = c.usedFallbackTemplate ? "This repo has no PR template; use the Slipway default template below unless the other rules say otherwise." : "Follow these repository rules for the PR title and description. The repo rules win over any Slipway default.";

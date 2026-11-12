@@ -27,7 +27,8 @@ export function defaultPromoteDeps(log: (m: string) => void, token: string, acto
     originHasBranch,
     scan: (dir, range) => scanSecrets(dir, range),
     runTests: runShell,
-    originAuth: (dir) => githubOriginAuth(dir, token),
+    // In a Docker sandbox the sbx proxy adds the GitHub login to github.com requests (ADR 0015); the token here is a placeholder.
+    originAuth: (dir) => (config.sandbox ? Promise.resolve([]) : githubOriginAuth(dir, token)),
     log,
   };
 }
