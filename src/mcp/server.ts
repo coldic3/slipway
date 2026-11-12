@@ -80,11 +80,11 @@ export function createServer(): McpServer {
   }, async (a) => asContent(await reply(a)));
 
   server.registerTool('slipway_promote', {
-    description: 'Promote the approved PR to GitHub exactly as reviewed: same commits (no rebase, no squashing), secret scan, optional tests, push, open or update the GitHub PR with the exact Gitea title/description. Only works when the user approved the current commit and the branch contains the current base.',
+    description: 'Promote the approved PR to GitHub exactly as reviewed: same commits (no rebase, no squashing), secret scan, optional tests, push, open or update the GitHub PR with the exact Gitea title/description, targeting the PR\'s base. Only works when the user approved the current commit after the last base change and the branch contains the current base. A stacked PR goes after its parent.',
     inputSchema: {
       cwd, pr,
       draft: z.boolean().optional(),
-      base: z.string().optional().describe('GitHub target branch (default: the repo base)'),
+      base: z.string().optional().describe('GitHub target branch; must equal the PR\'s base in Slipway (the default). To change it, use slipway_update_pr first.'),
       test_cmd: z.string().optional().describe('Command to run on the rebased branch before pushing, e.g. "npm test"'),
     },
   }, async (a) => asContent(await promoteTool(a)));
