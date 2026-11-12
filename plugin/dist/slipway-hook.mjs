@@ -135,6 +135,25 @@ var GiteaClient = class {
   pullDiff(owner, repo, idx) {
     return this.req("GET", `/repos/${owner}/${repo}/pulls/${idx}.diff`, void 0, "text/plain");
   }
+  pullCommits(owner, repo, idx) {
+    return this.all(`/repos/${owner}/${repo}/pulls/${idx}/commits?stat=false&files=false&verification=false`);
+  }
+  pullFiles(owner, repo, idx) {
+    return this.all(`/repos/${owner}/${repo}/pulls/${idx}/files`);
+  }
+  /** Issue timeline of a PR, oldest first: base changes, pushes, reviews, comments, close/reopen. */
+  timeline(owner, repo, idx) {
+    return this.all(`/repos/${owner}/${repo}/issues/${idx}/timeline`);
+  }
+  async branchExists(owner, repo, branch) {
+    try {
+      await this.req("GET", `/repos/${owner}/${repo}/branches/${branch.split("/").map(encodeURIComponent).join("/")}`);
+      return true;
+    } catch (e) {
+      if (e instanceof GiteaError && e.status === 404) return false;
+      throw e;
+    }
+  }
   listReviews(owner, repo, idx) {
     return this.all(`/repos/${owner}/${repo}/pulls/${idx}/reviews`);
   }
