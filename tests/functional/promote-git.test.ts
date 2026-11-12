@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { prepareBranch, pushToOrigin } from '../../src/promote/git.ts';
+import { originHasBranch, prepareBranch, pushToOrigin } from '../../src/promote/git.ts';
 import { git } from '../../src/util/exec.ts';
 import { AGENT, agentCommit, HUMAN, humanCommitOnOrigin, identityEnv, log, makeFixture, type Fixture } from '../helpers/git-fixture.ts';
 
@@ -16,6 +16,13 @@ describe('promotion git engine (functional, real git) — exact promotion, no re
     f = await makeFixture();
     await agentCommit(f, BR, 'feature.txt', 'v1\n', 'Add feature');
     await agentCommit(f, BR, 'other.txt', 'o\n', 'Add other');
+  });
+
+  it('originHasBranch: true for a GitHub branch, false for a missing one (stacked PR parents)', async () => {
+    expect(await originHasBranch(f.clone, 'main', [], env())).toBe(true);
+    expect(await originHasBranch(f.clone, 'agent/3-parent', [], env())).toBe(false);
+    await git(f.clone, ['remote', 'set-url', 'origin', join(f.root, 'nowhere')], env());
+    await expect(originHasBranch(f.clone, 'main', [], env())).rejects.toThrow(/could not read branches/);
   });
 
   it('promotes the reviewed commits exactly as they are (same SHAs, nothing folded or re-authored)', async () => {

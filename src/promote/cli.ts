@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util';
 import { loadConfig, type Account } from '../config.ts';
 import { GiteaClient } from '../gitea/client.ts';
 import { GitHubClient } from '../github/client.ts';
-import { prepareBranch, pushToOrigin } from './git.ts';
+import { originHasBranch, prepareBranch, pushToOrigin } from './git.ts';
 import { githubOriginAuth, promote, runShell, type PromoteDeps, type PromoteOptions } from './promote.ts';
 import { githubToken } from './github-token.ts';
 import { scanSecrets } from './secrets.ts';
@@ -24,6 +24,7 @@ export function defaultPromoteDeps(log: (m: string) => void, token: string, acto
     github: new GitHubClient(githubApiBase(), token),
     prepare: prepareBranch,
     push: pushToOrigin,
+    originHasBranch,
     scan: (dir, range) => scanSecrets(dir, range),
     runTests: runShell,
     originAuth: (dir) => githubOriginAuth(dir, token),

@@ -17,6 +17,7 @@ export interface MockPull {
   draft: boolean;
   state: 'open' | 'closed';
   html_url: string;
+  merged_at?: string | null;
 }
 
 /** Minimal in-memory GitHub REST API: list/create/update pulls. */

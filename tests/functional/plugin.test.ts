@@ -20,7 +20,7 @@ describe('Slipway plugin', () => {
     try {
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name).sort()).toEqual([
-        'slipway_open_pr', 'slipway_promote', 'slipway_push', 'slipway_reply', 'slipway_repo_conventions', 'slipway_review_comments', 'slipway_start_task', 'slipway_status', 'slipway_update_pr',
+        'slipway_close_pr', 'slipway_list_prs', 'slipway_open_pr', 'slipway_pr', 'slipway_promote', 'slipway_push', 'slipway_reply', 'slipway_repo_conventions', 'slipway_review_comments', 'slipway_start_task', 'slipway_status', 'slipway_update_pr',
       ]);
       const r: any = await client.callTool({ name: 'slipway_status', arguments: { cwd } });
       expect(r.isError).toBe(true);

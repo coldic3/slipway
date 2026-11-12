@@ -21,7 +21,24 @@ export interface GPull {
   user: GUser;
   labels: GLabel[];
   head: { ref: string; sha: string };
-  base: { ref: string };
+  base: { ref: string; sha?: string };
+  additions?: number;
+  deletions?: number;
+  changed_files?: number;
+  created_at?: string;
+}
+
+export interface GCommit { sha: string; commit: { message: string; author?: { name: string; date?: string } } }
+export interface GFile { filename: string; status: string; additions: number; deletions: number; previous_filename?: string }
+export interface GTimelineEvent {
+  id?: number;
+  type: string;
+  created_at: string;
+  user?: GUser | null;
+  body?: string;
+  old_ref?: string;
+  new_ref?: string;
+  review_id?: number;
 }
 
 export interface GReview {
@@ -46,6 +63,7 @@ export interface GReviewComment {
   user: GUser;
   pull_request_review_id?: number;
   html_url?: string;
+  created_at?: string;
 }
 
 export interface GComment { id: number; body: string; user: GUser; created_at: string; html_url?: string }

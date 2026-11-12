@@ -9,7 +9,7 @@ const config = {
 
 const opts: PromoteOptions = { repo: 'demo', pr: 4, draft: false, force: false };
 
-function deps(over: { reviews?: any[]; scan?: any; prepare?: any; tests?: number; prOpen?: boolean } = {}) {
+function deps(over: { reviews?: any[]; scan?: any; prepare?: any; tests?: number; prOpen?: boolean; base?: string; timeline?: () => Promise<any[]>; onGitHub?: string[]; openPulls?: any[]; merged?: any } = {}) {
   const calls: string[] = [];
   let title = 'Add `x` ąę';
   const d = {
@@ -18,13 +18,19 @@ function deps(over: { reviews?: any[]; scan?: any; prepare?: any; tests?: number
     actor: { username: 'claude-mac', token: 'ct' },
     log: () => {},
     gitea: {
-      getPull: vi.fn(async () => ({ number: 4, title, body: '## Context\nBody', state: over.prOpen === false ? 'closed' : 'open', head: { ref: 'agent/4-x', sha: 'abc' }, base: { ref: 'main' }, html_url: 'http://g/kevin/demo/pulls/4', labels: [] })),
-      listReviews: vi.fn(async () => over.reviews ?? [{ id: 1, user: { login: 'kevin' }, state: 'APPROVED', commit_id: 'abc', dismissed: false }]),
+      getPull: vi.fn(async () => ({ number: 4, title, body: '## Context\nBody', state: over.prOpen === false ? 'closed' : 'open', head: { ref: 'agent/4-x', sha: 'abc' }, base: { ref: over.base ?? 'main' }, html_url: 'http://g/kevin/demo/pulls/4', labels: [] })),
+      listReviews: vi.fn(async () => over.reviews ?? [{ id: 1, user: { login: 'kevin' }, state: 'APPROVED', commit_id: 'abc', dismissed: false, submitted_at: '2026-11-12T10:00:00Z' }]),
+      timeline: vi.fn(over.timeline ?? (async () => [])),
+      listPulls: vi.fn(async () => over.openPulls ?? []),
       comment: vi.fn(async (_o: string, _r: string, _i: number, b: string) => { calls.push(`comment:${b}`); return { id: 1 }; }),
       closePull: vi.fn(async () => { calls.push('close'); }),
       removeLabel: vi.fn(async () => {}),
     },
-    github: { upsertPull: vi.fn(async () => { calls.push('github'); return { number: 9, html_url: 'https://github.com/kevin/demo/pull/9', updated: false }; }) },
+    github: {
+      upsertPull: vi.fn(async () => { calls.push('github'); return { number: 9, html_url: 'https://github.com/kevin/demo/pull/9', updated: false }; }),
+      mergedPullFor: vi.fn(async () => over.merged ?? null),
+    },
+    originHasBranch: vi.fn(async (_dir: string, b: string) => (over.onGitHub ?? ['main', 'release']).includes(b)),
     prepare: vi.fn(async () => over.prepare ?? { ok: true, worktree: '/wt', head: 'h', baseSha: 'b', fetchedHead: 'abc', cleanup: async () => { calls.push('cleanup'); } }),
     push: vi.fn(async () => { calls.push('push'); }),
     scan: vi.fn(async () => over.scan ?? { ok: true, findings: [] }),
@@ -84,9 +90,14 @@ describe('promote', () => {
     expect(calls.slice(-3)).toEqual(['comment:🚢 Promoted to GitHub: https://github.com/kevin/demo/pull/9', 'close', 'cleanup']);
   });
 
-  it('--base overrides the GitHub target branch', async () => {
+  it('--base other than the PR\'s base in Slipway is refused (a diff nobody reviewed); --force overrides', async () => {
+    const refused = deps();
+    const r = await promote({ ...opts, base: 'release' }, refused.d);
+    expect(r.code).toBe(1);
+    expect(r.message).toMatch(/targets main in Slipway[\s\S]*slipway_update_pr/);
+    expect(refused.raw.prepare).not.toHaveBeenCalled();
     const { d, raw } = deps();
-    await promote({ ...opts, base: 'release' }, d);
+    await promote({ ...opts, base: 'release', force: true }, d);
     expect(raw.prepare).toHaveBeenCalledWith(expect.objectContaining({ base: 'release' }));
     expect(raw.github.upsertPull).toHaveBeenCalledWith(expect.objectContaining({ base: 'release' }));
   });
@@ -160,4 +171,54 @@ describe('promote', () => {
     const adminOnly = deps({ reviews: [{ id: 1, user: { login: 'admin' }, state: 'APPROVED', commit_id: 'abc', dismissed: false }] });
     expect((await promote(opts, adminOnly.d)).code).toBe(5);
   });
+
+  describe('stacked PRs (ADR 0014)', () => {
+    it('targets the PR\'s base in Slipway: behind check, scan range and GitHub PR use it', async () => {
+      const { d, raw } = deps({ base: 'agent/3-parent', onGitHub: ['main', 'agent/3-parent'] });
+      expect((await promote(opts, d)).code).toBe(0);
+      expect(raw.originHasBranch).toHaveBeenCalledWith('/repo', 'agent/3-parent', ['-c', 'x']);
+      expect(raw.github.mergedPullFor).toHaveBeenCalledWith('kevin/demo', 'agent/3-parent');
+      expect(raw.prepare).toHaveBeenCalledWith(expect.objectContaining({ base: 'agent/3-parent' }));
+      expect(raw.github.upsertPull).toHaveBeenCalledWith(expect.objectContaining({ base: 'agent/3-parent' }));
+    });
+
+    it('the repo base needs no GitHub lookups', async () => {
+      const { d, raw } = deps();
+      expect((await promote(opts, d)).code).toBe(0);
+      expect(raw.originHasBranch).not.toHaveBeenCalled();
+      expect(raw.github.mergedPullFor).not.toHaveBeenCalled();
+    });
+
+    it('parent not on GitHub yet, with an open Slipway PR → "promote #N first"', async () => {
+      const { d, raw } = deps({ base: 'agent/3-parent', openPulls: [{ number: 3, head: { ref: 'agent/3-parent' } }] });
+      const r = await promote(opts, d);
+      expect(r.code).toBe(1);
+      expect(r.message).toMatch(/stacked on #3[\s\S]*promote #3 first/);
+      expect(raw.prepare).not.toHaveBeenCalled();
+    });
+
+    it('parent gone from GitHub and no Slipway PR → retarget to the repo base', async () => {
+      const r = await promote(opts, deps({ base: 'agent/3-parent' }).d);
+      expect(r.code).toBe(1);
+      expect(r.message).toMatch(/not on GitHub[\s\S]*slipway_update_pr base="main"[\s\S]*fresh approval/);
+    });
+
+    it('parent merged on GitHub (branch kept) → retarget to the repo base', async () => {
+      const { d, raw } = deps({ base: 'agent/3-parent', onGitHub: ['main', 'agent/3-parent'], merged: { number: 12, html_url: 'https://github.com/kevin/demo/pull/12' } });
+      const r = await promote(opts, d);
+      expect(r.code).toBe(1);
+      expect(r.message).toMatch(/pull\/12 is already merged[\s\S]*slipway_update_pr/);
+      expect(raw.push).not.toHaveBeenCalled();
+    });
+
+    it('an approval from before the last base change does not count (exit 5); neither does an unreadable timeline', async () => {
+      const moved = await promote(opts, deps({ timeline: async () => [{ type: 'change_target_branch', created_at: '2026-11-12T11:00:00Z' }] }).d);
+      expect(moved.code).toBe(5);
+      expect(moved.message).toMatch(/approved before its base changed/);
+      const broken = await promote(opts, deps({ timeline: async () => { throw new Error('boom'); } }).d);
+      expect(broken.code).toBe(5);
+      expect(broken.message).toMatch(/timeline/);
+    });
+  });
 });
+

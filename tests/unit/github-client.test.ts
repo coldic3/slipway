@@ -33,3 +33,20 @@ describe('GitHubClient.upsertPull', () => {
     await expect(bad.upsertPull(input)).rejects.toThrow(/401/);
   });
 });
+
+describe('GitHubClient.mergedPullFor', () => {
+  const gh = new MockGitHub();
+  let client: GitHubClient;
+  beforeAll(async () => { client = new GitHubClient(await gh.start(), 'tok'); });
+  afterAll(() => gh.stop());
+
+  it('finds a merged PR for the head, ignoring closed-unmerged ones', async () => {
+    const mk = (number: number, head: string, merged_at: string | null) =>
+      ({ number, head, base: 'main', title: 't', body: '', draft: false, state: 'closed' as const, html_url: `https://github.com/kevin/demo/pull/${number}`, merged_at });
+    gh.pulls = [mk(1, 'agent/3-parent', null), mk(2, 'agent/3-parent', '2026-11-12T10:00:00Z'), mk(3, 'other', '2026-11-12T10:00:00Z')];
+    expect(await client.mergedPullFor('kevin/demo', 'agent/3-parent')).toEqual({ number: 2, html_url: 'https://github.com/kevin/demo/pull/2' });
+    expect(gh.requests.at(-1)!.url).toBe('/repos/kevin/demo/pulls?head=kevin%3Aagent%2F3-parent&state=closed');
+    gh.pulls = [mk(1, 'agent/3-parent', null)];
+    expect(await client.mergedPullFor('kevin/demo', 'agent/3-parent')).toBeNull();
+  });
+});

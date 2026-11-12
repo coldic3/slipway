@@ -36759,17 +36759,40 @@ function saveConfig(config2) {
 }
 
 // src/core/approval.ts
-function isApprovedByOwner(reviews, owner, headSha) {
-  const verdicts = reviews.filter((r) => r.user?.login === owner && !r.dismissed && (r.state === "APPROVED" || r.state === "REQUEST_CHANGES"));
-  const last = verdicts.at(-1);
+var verdictsOf = (reviews, owner, o) => reviews.filter((r) => r.user?.login === owner && !r.dismissed && (r.state === "APPROVED" || r.state === "REQUEST_CHANGES") && (o.notBefore === void 0 || Date.parse(r.submitted_at ?? "") > o.notBefore));
+function isApprovedByOwner(reviews, owner, headSha, o = {}) {
+  const last = verdictsOf(reviews, owner, o).at(-1);
   return !!last && last.state === "APPROVED" && (!last.commit_id || last.commit_id === headSha);
 }
-function prStateFromReviews(reviews, owner, headSha, open2) {
+function prStateFromReviews(reviews, owner, headSha, open2, o = {}) {
   if (!open2) return "closed";
-  if (isApprovedByOwner(reviews, owner, headSha)) return "approved";
-  const last = reviews.filter((r) => r.user?.login === owner && !r.dismissed && (r.state === "APPROVED" || r.state === "REQUEST_CHANGES")).at(-1);
+  if (isApprovedByOwner(reviews, owner, headSha, o)) return "approved";
+  const last = verdictsOf(reviews, owner, o).at(-1);
   if (last?.state === "REQUEST_CHANGES" && (!last.commit_id || last.commit_id === headSha)) return "changes-requested";
   return "in-review";
+}
+function lastBaseChangeAt(timeline) {
+  const times = timeline.filter((e) => e.type === "change_target_branch").map((e) => Date.parse(e.created_at));
+  return times.length ? Math.max(...times) : void 0;
+}
+async function approvalOf(gitea, owner, repo, pr2, approver) {
+  const reviews = await gitea.listReviews(owner, repo, pr2.number);
+  const open2 = pr2.state === "open";
+  let notBefore;
+  try {
+    notBefore = lastBaseChangeAt(await gitea.timeline(owner, repo, pr2.number));
+  } catch (e) {
+    const state2 = prStateFromReviews(reviews, approver, pr2.head.sha, open2);
+    return {
+      state: state2 === "approved" ? "in-review" : state2,
+      approved: false,
+      warning: `could not read the PR timeline (${e.message}), so the approval does not count`
+    };
+  }
+  const state = prStateFromReviews(reviews, approver, pr2.head.sha, open2, { notBefore });
+  const approved = state === "approved";
+  const baseChangedAfterApproval = open2 && !approved && notBefore !== void 0 && isApprovedByOwner(reviews, approver, pr2.head.sha);
+  return { state, approved, ...baseChangedAfterApproval ? { baseChangedAfterApproval } : {} };
 }
 
 // src/gitea/client.ts
@@ -36876,6 +36899,25 @@ var GiteaClient = class {
   }
   pullDiff(owner, repo, idx) {
     return this.req("GET", `/repos/${owner}/${repo}/pulls/${idx}.diff`, void 0, "text/plain");
+  }
+  pullCommits(owner, repo, idx) {
+    return this.all(`/repos/${owner}/${repo}/pulls/${idx}/commits?stat=false&files=false&verification=false`);
+  }
+  pullFiles(owner, repo, idx) {
+    return this.all(`/repos/${owner}/${repo}/pulls/${idx}/files`);
+  }
+  /** Issue timeline of a PR, oldest first: base changes, pushes, reviews, comments, close/reopen. */
+  timeline(owner, repo, idx) {
+    return this.all(`/repos/${owner}/${repo}/issues/${idx}/timeline`);
+  }
+  async branchExists(owner, repo, branch) {
+    try {
+      await this.req("GET", `/repos/${owner}/${repo}/branches/${branch.split("/").map(encodeURIComponent).join("/")}`);
+      return true;
+    } catch (e) {
+      if (e instanceof GiteaError && e.status === 404) return false;
+      throw e;
+    }
   }
   listReviews(owner, repo, idx) {
     return this.all(`/repos/${owner}/${repo}/pulls/${idx}/reviews`);
@@ -37019,6 +37061,14 @@ var GitHubClient = class {
     });
     return { number: pr2.number, html_url: pr2.html_url, updated: false };
   }
+  /** The merged PR whose head is `head` (same owner), if any: a stacked child must not be promoted into a merged parent. */
+  async mergedPullFor(repo, head) {
+    const [owner] = repo.split("/");
+    const q = new URLSearchParams({ head: `${owner}:${head}`, state: "closed" });
+    const closed = await this.req("GET", `/repos/${repo}/pulls?${q}`);
+    const merged = closed.find((p) => p.merged_at);
+    return merged ? { number: merged.number, html_url: merged.html_url } : null;
+  }
 };
 
 // src/promote/git.ts
@@ -37130,6 +37180,16 @@ async function prepareBranch(o) {
     await run("git", ["update-ref", "-d", promoteRef], { cwd: o.repoDir, env });
   };
   return { ok: true, worktree, head: fetchedHead, baseSha, fetchedHead, cleanup };
+}
+async function originHasBranch(repoDir, branch, authArgs = [], env) {
+  const r = await run(
+    "git",
+    [...authArgs, "ls-remote", "--exit-code", "--heads", "origin", `refs/heads/${branch}`],
+    { cwd: repoDir, env: hardenedGitEnv(env ?? process.env), timeoutMs: 6e4 }
+  );
+  if (r.code === 0) return true;
+  if (r.code === 2) return false;
+  throw new Error(`could not read branches from GitHub (origin): ${r.stderr.trim().split("\n").pop()}`);
 }
 var PushRejectedError = class extends Error {
 };
@@ -37261,14 +37321,29 @@ async function promote(o, d) {
   const approver = d.config.reviewer.username;
   const pr2 = await d.gitea.getPull(owner, o.repo, o.pr);
   if (pr2.state !== "open") return fail(EXIT.ERROR, `PR #${o.pr} is ${pr2.state}; only open PRs can be promoted`);
-  const approved = isApprovedByOwner(await d.gitea.listReviews(owner, o.repo, o.pr), approver, pr2.head.sha);
-  if (!approved && !o.force) {
-    return fail(EXIT.NOT_APPROVED, `PR #${o.pr} is not approved by ${approver} at its current head. Approve it in Gitea.`);
+  const approval = await approvalOf(d.gitea, owner, o.repo, pr2, approver);
+  if (!approval.approved && !o.force) {
+    const why = approval.warning ? ` (${approval.warning})` : approval.baseChangedAfterApproval ? " (it was approved before its base changed)" : "";
+    return fail(EXIT.NOT_APPROVED, `PR #${o.pr} is not approved by ${approver} at its current head and base${why}. Approve it in Gitea.`);
   }
-  const base = o.base ?? entry.base;
+  const base = o.base ?? pr2.base.ref;
+  if (base !== pr2.base.ref && !o.force) {
+    return fail(EXIT.ERROR, `PR #${o.pr} targets ${pr2.base.ref} in Slipway, so promoting it to ${base} would publish a diff nobody reviewed. Change its base in Slipway (slipway_update_pr), rebase, push and get a fresh approval.`);
+  }
   const branch = pr2.head.ref;
-  d.log(`preparing ${branch} (exact promotion onto origin/${base})`);
   const originAuthArgs = await d.originAuth(entry.path);
+  if (base !== entry.base) {
+    const retarget = `change its base in Slipway to ${entry.base} (slipway_update_pr base="${entry.base}"), rebase onto origin/${entry.base}, push with force_with_lease and get a fresh approval`;
+    if (!await d.originHasBranch(entry.path, base, originAuthArgs)) {
+      const parent = (await d.gitea.listPulls(owner, o.repo, "open")).find((p) => p.head.ref === base);
+      return fail(EXIT.ERROR, parent ? `PR #${o.pr} is stacked on #${parent.number} (${base}), which is not on GitHub yet: promote #${parent.number} first.` : `PR #${o.pr} targets ${base}, which is not on GitHub (was its parent merged and the branch deleted?): ${retarget}.`);
+    }
+    const merged = await d.github.mergedPullFor(entry.github, base);
+    if (merged) {
+      return fail(EXIT.ERROR, `PR #${o.pr} targets ${base}, whose GitHub PR ${merged.html_url} is already merged: ${retarget}.`);
+    }
+  }
+  d.log(`preparing ${branch} (exact promotion onto origin/${base})`);
   const prep = await d.prepare({
     repoDir: entry.path,
     reviewUrl: `${d.config.giteaUrl.replace(/\/$/, "")}/${owner}/${o.repo}.git`,
@@ -37366,6 +37441,7 @@ function defaultPromoteDeps(log, token, actor) {
     github: new GitHubClient(githubApiBase(), token),
     prepare: prepareBranch,
     push: pushToOrigin,
+    originHasBranch,
     scan: (dir, range) => scanSecrets(dir, range),
     runTests: runShell,
     originAuth: (dir) => githubOriginAuth(dir, token),
@@ -37810,8 +37886,21 @@ async function findPr(s, pr2) {
   throw new Error(`No open Slipway PR for branch ${s.repo.branch ?? "(detached)"}. Pass "pr". Open PRs:
 ${others}`);
 }
-async function stateOf(s, p) {
-  return prStateFromReviews(await s.gitea.listReviews(s.owner, s.repo.name, p.number), s.approver, p.head.sha, p.state === "open");
+function approvalFor(s, p) {
+  return approvalOf(s.gitea, s.owner, s.repo.name, p, s.approver);
+}
+function describeState(a) {
+  if (a.warning) return `${a.state} (warning: ${a.warning})`;
+  if (a.baseChangedAfterApproval) return `${a.state} (approved before the base changed: needs a fresh approval)`;
+  return a.state;
+}
+var PROMOTED = "\u{1F6A2} Promoted to GitHub:";
+var promotedLink = (comments) => comments.find((c) => c.body.startsWith(PROMOTED))?.body.slice(PROMOTED.length).trim();
+async function checkBase(s, head, base) {
+  if (base === head) throw new Error(`The base cannot be the PR's own branch (${head}).`);
+  if (!await s.gitea.branchExists(s.owner, s.repo.name, base)) {
+    throw new Error(`Branch "${base}" does not exist in Slipway. Push it first (slipway_push from its worktree) or pick another base.`);
+  }
 }
 async function syncSlipwayBase(s, d) {
   try {
@@ -37844,7 +37933,7 @@ function status(args, d = defaultToolDeps) {
     const pr2 = open2.find((p) => p.head.ref === s.repo.branch);
     if (pr2) {
       const unresolved = await s.gitea.unresolvedComments(s.owner, s.repo.name, pr2.number, s.claude.username);
-      lines.push(`PR: #${pr2.number} "${pr2.title}" ${pr2.html_url}`, `State: ${await stateOf(s, pr2)}`, `Unresolved review comments: ${unresolved.length}`);
+      lines.push(`PR: #${pr2.number} "${pr2.title}" ${pr2.html_url}`, `Base: ${pr2.base.ref}`, `State: ${describeState(await approvalFor(s, pr2))}`, `Unresolved review comments: ${unresolved.length}`);
     } else {
       lines.push("PR: none for this branch");
     }
@@ -37883,6 +37972,7 @@ function push(args, d = defaultToolDeps) {
 function openPr(args, d = defaultToolDeps) {
   return tool(async () => {
     const s = await session(args, d);
+    if (args.base !== void 0) await checkBase(s, s.repo.branch ?? "", args.base);
     const warning = await syncSlipwayBase(s, d);
     const pushed = await d.pushBranch({
       worktree: s.repo.worktree,
@@ -37906,17 +37996,145 @@ Tell the user it is ready for review in Gitea.${warning}`;
 }
 function updatePr(args, d = defaultToolDeps) {
   return tool(async () => {
-    if (args.title === void 0 && args.body === void 0) throw new Error("Nothing to update: pass title and/or body.");
+    if (args.title === void 0 && args.body === void 0 && args.base === void 0) throw new Error("Nothing to update: pass title, body and/or base.");
     const s = await session(args, d);
     const pr2 = await findPr(s, args.pr);
-    if (await stateOf(s, pr2) === "approved") {
-      throw new Error(`PR #${pr2.number} is approved: its title/description are frozen for you. Ask the user to edit them in Gitea, or to request changes first.`);
+    if (pr2.state !== "open") throw new Error(`PR #${pr2.number} is ${pr2.state}: only open PRs can be changed.`);
+    const before = await approvalFor(s, pr2);
+    if (before.approved && (args.title !== void 0 || args.body !== void 0)) {
+      throw new Error(`PR #${pr2.number} is approved: its title/description are frozen for you, so nothing was changed. Ask the user to edit them in Gitea, or to request changes first.${args.base !== void 0 ? " To change only the base, call again with base alone." : ""}`);
     }
+    const retarget = args.base !== void 0 && args.base !== pr2.base.ref;
+    if (retarget) await checkBase(s, pr2.head.ref, args.base);
     const patch = {};
     if (args.title !== void 0) patch.title = args.title;
     if (args.body !== void 0) patch.body = args.body;
+    if (retarget) patch.base = args.base;
+    if (Object.keys(patch).length === 0) return `PR #${pr2.number} already targets ${pr2.base.ref}: nothing to change.`;
     await s.gitea.editPull(s.owner, s.repo.name, pr2.number, patch);
-    return `Updated PR #${pr2.number}: ${pr2.html_url}`;
+    const lines = [`Updated PR #${pr2.number}: ${pr2.html_url}`];
+    if (retarget) {
+      const fresh = await s.gitea.getPull(s.owner, s.repo.name, pr2.number);
+      const commits = await s.gitea.pullCommits(s.owner, s.repo.name, pr2.number).then((c) => `${c.length} commit(s), `, () => "");
+      lines.push(`Base: ${pr2.base.ref} \u2192 ${fresh.base.ref}. Diff now: ${commits}${fresh.changed_files ?? "?"} file(s) (+${fresh.additions ?? "?"}/\u2212${fresh.deletions ?? "?"}).`);
+      if (before.approved) lines.push("The approval no longer counts (the diff the user approved changed): ask the user to approve it again in Gitea.");
+    }
+    return lines.join("\n");
+  });
+}
+function closePr(args, d = defaultToolDeps) {
+  return tool(async () => {
+    if (!args.reason?.trim()) throw new Error('Pass a reason (e.g. "Superseded by #7 and #8"); it is posted on the PR.');
+    const s = await session(args, d);
+    const pr2 = await s.gitea.getPull(s.owner, s.repo.name, args.pr);
+    if (pr2.state !== "open") return `PR #${pr2.number} is already ${pr2.state}: nothing to do. ${pr2.html_url}`;
+    await s.gitea.comment(s.owner, s.repo.name, pr2.number, `Closed by ${s.claude.username}: ${args.reason.trim()}`);
+    await s.gitea.editPull(s.owner, s.repo.name, pr2.number, { state: "closed" });
+    return `Closed PR #${pr2.number} "${pr2.title}": ${pr2.html_url}
+The user can reopen it in Gitea.`;
+  });
+}
+function listPrs(args, d = defaultToolDeps) {
+  return tool(async () => {
+    const s = await session(args, d);
+    const state = args.state ?? "open";
+    const pulls = await s.gitea.listPulls(s.owner, s.repo.name, state);
+    if (pulls.length === 0) return `No ${state === "all" ? "" : state + " "}Slipway PRs in ${s.repo.name}.`;
+    const lines = await Promise.all(pulls.map(async (p) => {
+      let st;
+      let extra = "";
+      if (p.state === "open") {
+        st = describeState(await approvalFor(s, p));
+        const unresolved = await s.gitea.unresolvedComments(s.owner, s.repo.name, p.number, s.claude.username).then((u) => u.length, () => "?");
+        extra = ` \xB7 unresolved: ${unresolved}`;
+      } else {
+        const link = promotedLink(await s.gitea.listComments(s.owner, s.repo.name, p.number).catch(() => []));
+        st = link ? `promoted (${link})` : "closed";
+      }
+      return `#${p.number} ${p.title} \xB7 ${p.head.ref} \u2192 ${p.base.ref} \xB7 ${st}${extra}${p.head.ref === s.repo.branch ? " \xB7 (this branch)" : ""}`;
+    }));
+    return lines.join("\n");
+  });
+}
+var DIFF_LIMIT = 1e5;
+var short = (sha) => (sha ?? "").slice(0, 8);
+var indent = (text) => text.trim().split("\n").map((l) => `    ${l}`).join("\n");
+function timelineLine(e) {
+  const who = e.user?.login ?? "?";
+  switch (e.type) {
+    case "change_target_branch":
+      return `${e.created_at} ${who}: base ${e.old_ref} \u2192 ${e.new_ref}`;
+    case "close":
+      return `${e.created_at} ${who}: closed`;
+    case "reopen":
+      return `${e.created_at} ${who}: reopened`;
+    case "pull_push": {
+      let info = {};
+      try {
+        info = JSON.parse(e.body ?? "{}");
+      } catch {
+      }
+      const ids = info.commit_ids ?? [];
+      return `${e.created_at} ${who}: ${info.is_force_push ? `force-pushed ${ids.map(short).join(" \u2192 ")}` : `pushed ${ids.length} commit(s)`}`;
+    }
+    default:
+      return void 0;
+  }
+}
+function prDetails(args, d = defaultToolDeps) {
+  return tool(async () => {
+    const s = await session(args, d);
+    const pr2 = await findPr(s, args.pr);
+    const g = s.gitea, o = s.owner, r = s.repo.name, n = pr2.number;
+    const [approval, commits, files, reviews, inline, comments, timeline] = await Promise.all([
+      approvalFor(s, pr2),
+      g.pullCommits(o, r, n),
+      g.pullFiles(o, r, n),
+      g.listReviews(o, r, n),
+      g.allReviewComments(o, r, n),
+      g.listComments(o, r, n),
+      g.timeline(o, r, n).catch(() => [])
+    ]);
+    const link = pr2.state === "open" ? void 0 : promotedLink(comments);
+    const out = [
+      `PR #${n} "${pr2.title}" ${pr2.html_url}`,
+      `Author: ${pr2.user?.login ?? "?"} \xB7 State: ${link ? `promoted (${link})` : describeState(approval)}`,
+      `Head: ${pr2.head.ref} (${short(pr2.head.sha)}) \u2192 Base: ${pr2.base.ref}${pr2.base.sha ? ` (${short(pr2.base.sha)})` : ""}`,
+      "",
+      "## Description",
+      pr2.body?.trim() || "(empty)",
+      "",
+      `## Commits (${commits.length})`,
+      ...commits.map((c) => `- ${short(c.sha)} ${c.commit.message.split("\n")[0]}`),
+      "",
+      `## Files (${files.length}, +${pr2.additions ?? "?"}/\u2212${pr2.deletions ?? "?"})`,
+      ...files.map((f) => `- ${f.status} ${f.previous_filename ? `${f.previous_filename} \u2192 ` : ""}${f.filename} (+${f.additions}/\u2212${f.deletions})`),
+      "",
+      `## Reviews (${reviews.length})`,
+      ...reviews.map((v) => {
+        const counts = v.user?.login === s.approver && (v.state === "APPROVED" || v.state === "REQUEST_CHANGES");
+        const flags = [v.dismissed ? "dismissed" : "", v.commit_id && v.commit_id !== pr2.head.sha ? "older commit" : ""].filter(Boolean).join(", ");
+        return `- ${v.submitted_at} ${v.user?.login ?? "?"}: ${v.state} at ${short(v.commit_id)}${flags ? ` (${flags})` : ""}${counts ? "" : " (does not count for promotion)"}${v.body?.trim() ? `
+${indent(v.body)}` : ""}`;
+      }),
+      "",
+      `## Inline comments (${inline.length})`,
+      ...inline.map(({ comment: c }) => `- [${c.resolver ? "resolved" : "unresolved"}] comment_id ${c.id} \xB7 ${c.path}:${c.position || c.original_position} \xB7 ${c.user.login}
+${indent(c.body)}`),
+      "",
+      `## Conversation (${comments.length})`,
+      ...comments.map((c) => `- ${c.created_at} ${c.user.login}
+${indent(c.body)}`),
+      "",
+      "## Timeline",
+      ...timeline.map(timelineLine).filter(Boolean).map((l) => `- ${l}`)
+    ];
+    if (args.diff) {
+      const diff = await g.pullDiff(o, r, n);
+      out.push("", "## Diff", diff.length > DIFF_LIMIT ? `${diff.slice(0, DIFF_LIMIT)}
+\u2026 diff cut at ${DIFF_LIMIT} of ${diff.length} characters; read the rest with git locally.` : diff);
+    }
+    return out.join("\n");
   });
 }
 function reviewComments(args, d = defaultToolDeps) {
@@ -38008,13 +38226,35 @@ function createServer2() {
     inputSchema: { cwd, force_with_lease: external_exports.boolean().optional() }
   }, async (a) => asContent(await push(a)));
   server.registerTool("slipway_open_pr", {
-    description: "Push the current branch and open a Slipway PR (or return the existing one). Title and body must follow slipway_repo_conventions.",
-    inputSchema: { cwd, title: external_exports.string().min(1), body: external_exports.string(), base: external_exports.string().optional() }
+    description: "Push the current branch and open a Slipway PR (or return the existing one). Title and body must follow slipway_repo_conventions. For a stacked PR pass `base` = the parent PR's branch.",
+    inputSchema: { cwd, title: external_exports.string().min(1), body: external_exports.string(), base: external_exports.string().optional().describe("Target branch in Slipway (default: the repo base). For a stack: the parent PR's branch.") }
   }, async (a) => asContent(await openPr(a)));
   server.registerTool("slipway_update_pr", {
-    description: "Change the PR title and/or description. Refused once the user approved the PR (then only the user edits it).",
-    inputSchema: { cwd, pr, title: external_exports.string().min(1).optional(), body: external_exports.string().optional() }
+    description: "Change the PR title, description and/or target branch (base), e.g. to retarget a stacked PR after a split. Title/description are refused once the user approved the PR (then only the user edits them); the base can always change, but then the PR needs a fresh approval.",
+    inputSchema: {
+      cwd,
+      pr,
+      title: external_exports.string().min(1).optional(),
+      body: external_exports.string().optional(),
+      base: external_exports.string().min(1).optional().describe("New target branch in Slipway (must exist there)")
+    }
   }, async (a) => asContent(await updatePr(a)));
+  server.registerTool("slipway_close_pr", {
+    description: "Close a Slipway PR that is no longer needed (e.g. superseded after a split). Posts the reason on the PR first. The user can reopen it in Gitea.",
+    inputSchema: {
+      cwd,
+      pr: external_exports.number().int().positive().describe("Slipway PR number to close (required)"),
+      reason: external_exports.string().min(1).describe('Why, posted on the PR, e.g. "Superseded by #7 and #8"')
+    }
+  }, async (a) => asContent(await closePr(a)));
+  server.registerTool("slipway_list_prs", {
+    description: "List the Slipway PRs of this repo: number, title, head \u2192 base, state (in-review / changes-requested / approved / closed / promoted) and unresolved comments. Use it to check a stack or a split instead of asking the user for screenshots.",
+    inputSchema: { cwd, state: external_exports.enum(["open", "closed", "all"]).optional().describe("Default: open") }
+  }, async (a) => asContent(await listPrs(a)));
+  server.registerTool("slipway_pr", {
+    description: "Everything about one Slipway PR as the user sees it in Gitea: head/base, state, description, commits, files, all reviews, inline comments (resolved or not), conversation and timeline (base changes, force-pushes, close/reopen). diff=true adds the diff.",
+    inputSchema: { cwd, pr, diff: external_exports.boolean().optional() }
+  }, async (a) => asContent(await prDetails(a)));
   server.registerTool("slipway_review_comments", {
     description: "Unresolved review feedback on the PR: the latest review summary and each open inline thread (comment_id, file:line, text, diff context).",
     inputSchema: { cwd, pr }
@@ -38024,12 +38264,12 @@ function createServer2() {
     inputSchema: { cwd, pr, comment_id: external_exports.number().int().positive(), body: external_exports.string().min(1) }
   }, async (a) => asContent(await reply(a)));
   server.registerTool("slipway_promote", {
-    description: "Promote the approved PR to GitHub exactly as reviewed: same commits (no rebase, no squashing), secret scan, optional tests, push, open or update the GitHub PR with the exact Gitea title/description. Only works when the user approved the current commit and the branch contains the current base.",
+    description: "Promote the approved PR to GitHub exactly as reviewed: same commits (no rebase, no squashing), secret scan, optional tests, push, open or update the GitHub PR with the exact Gitea title/description, targeting the PR's base. Only works when the user approved the current commit after the last base change and the branch contains the current base. A stacked PR goes after its parent.",
     inputSchema: {
       cwd,
       pr,
       draft: external_exports.boolean().optional(),
-      base: external_exports.string().optional().describe("GitHub target branch (default: the repo base)"),
+      base: external_exports.string().optional().describe("GitHub target branch; must equal the PR's base in Slipway (the default). To change it, use slipway_update_pr first."),
       test_cmd: external_exports.string().optional().describe('Command to run on the rebased branch before pushing, e.g. "npm test"')
     }
   }, async (a) => asContent(await promoteTool(a)));

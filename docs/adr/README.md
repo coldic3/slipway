@@ -17,3 +17,4 @@ Key decisions behind Slipway. New decisions get the next number; a decision that
 | 0011 | [Distribution: Homebrew and npm, `slipway init`, one version](0011-distribution.md) |
 | 0012 | [Testing strategy](0012-testing-strategy.md) |
 | 0013 | [The guard asks the user when Slipway cannot settle a write](0013-guard-asks-when-unsure.md) |
+| 0014 | [Stacked PRs: approval after a base change, promotion to the PR's base](0014-stacked-prs.md) |

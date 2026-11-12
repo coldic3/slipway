@@ -33,3 +33,13 @@
   Transfer: `POST /repos/{owner}/{repo}/transfer {new_owner}`; as site admin it is immediate and keeps PRs, reviews and comments.
 - Demote a user: `PATCH /admin/users/{u}` `{login_name: u, source_id: 0, admin: false}`.
 - Teams API (Gitea 28): send either `units` or `units_map`, not both (400 "only one of units or units_map can be set").
+
+## PR base changes, timeline, closing (verified on 28.3.0, 2026-11-12)
+- Retarget: `PATCH /repos/{o}/{r}/pulls/{n}` `{base}`. Missing base → 404 `new base '<b>' not exist`. Gitea accepts base == head
+  (validate it yourself).
+- A base change does **not** dismiss or mark stale an existing approval (`dismissed: false`, `stale: false`).
+- `GET /repos/{o}/{r}/issues/{n}/timeline` (chronological): `change_target_branch` (`old_ref`, `new_ref`), `review` (`review_id`),
+  `pull_push` (body JSON `{is_force_push, commit_ids}`), `comment`, `close`, `reopen`. Written for API and UI changes alike.
+  `created_at` has second precision.
+- Close: `PATCH …/pulls/{n}` `{state: "closed"}`; reopen with `{state: "open"}`.
+- `GET …/pulls/{n}/commits?stat=false&files=false` and `GET …/pulls/{n}/files` (filename, status, additions, deletions).

@@ -1,4 +1,4 @@
-import type { GComment, GHook, GLabel, GPull, GRepo, GReview, GReviewComment, UnresolvedComment } from './types.ts';
+import type { GComment, GCommit, GFile, GHook, GLabel, GPull, GRepo, GReview, GReviewComment, GTimelineEvent, UnresolvedComment } from './types.ts';
 
 export class GiteaError extends Error {
   constructor(
@@ -85,7 +85,7 @@ export class GiteaClient {
   createPull(owner: string, repo: string, opts: { head: string; base: string; title: string; body: string }) {
     return this.req<GPull>('POST', `/repos/${owner}/${repo}/pulls`, opts);
   }
-  editPull(owner: string, repo: string, idx: number, opts: { title?: string; body?: string; state?: 'open' | 'closed' }) {
+  editPull(owner: string, repo: string, idx: number, opts: { title?: string; body?: string; base?: string; state?: 'open' | 'closed' }) {
     return this.req<GPull>('PATCH', `/repos/${owner}/${repo}/pulls/${idx}`, opts);
   }
   closePull(owner: string, repo: string, idx: number) { return this.editPull(owner, repo, idx, { state: 'closed' }); }
@@ -94,6 +94,22 @@ export class GiteaClient {
   }
   pullDiff(owner: string, repo: string, idx: number) {
     return this.req<string>('GET', `/repos/${owner}/${repo}/pulls/${idx}.diff`, undefined, 'text/plain');
+  }
+
+  pullCommits(owner: string, repo: string, idx: number) {
+    return this.all<GCommit>(`/repos/${owner}/${repo}/pulls/${idx}/commits?stat=false&files=false&verification=false`);
+  }
+  pullFiles(owner: string, repo: string, idx: number) { return this.all<GFile>(`/repos/${owner}/${repo}/pulls/${idx}/files`); }
+  /** Issue timeline of a PR, oldest first: base changes, pushes, reviews, comments, close/reopen. */
+  timeline(owner: string, repo: string, idx: number) { return this.all<GTimelineEvent>(`/repos/${owner}/${repo}/issues/${idx}/timeline`); }
+  async branchExists(owner: string, repo: string, branch: string): Promise<boolean> {
+    try {
+      await this.req('GET', `/repos/${owner}/${repo}/branches/${branch.split('/').map(encodeURIComponent).join('/')}`);
+      return true;
+    } catch (e) {
+      if (e instanceof GiteaError && e.status === 404) return false;
+      throw e;
+    }
   }
 
   listReviews(owner: string, repo: string, idx: number) { return this.all<GReview>(`/repos/${owner}/${repo}/pulls/${idx}/reviews`); }

@@ -36,3 +36,37 @@ describe('prStateFromReviews', () => {
     expect(prStateFromReviews([], 'kevin', 'head', true)).toBe('in-review');
   });
 });
+
+import { approvalOf, lastBaseChangeAt } from '../../src/core/approval.ts';
+
+const at = (id: number, login: string, state: string, submitted: string, commit = 'head') =>
+  ({ id, user: { login }, state, commit_id: commit, dismissed: false, body: '', submitted_at: submitted });
+
+describe('approval after a base change (ADR 0014)', () => {
+  const change = (created_at: string) => ({ type: 'change_target_branch', created_at, old_ref: 'a', new_ref: 'b' });
+
+  it('lastBaseChangeAt picks the latest change_target_branch', () => {
+    expect(lastBaseChangeAt([])).toBeUndefined();
+    expect(lastBaseChangeAt([change('2026-11-12T10:00:00+01:00'), { type: 'comment', created_at: '2026-11-12T12:00:00+01:00' }, change('2026-11-12T11:00:00+01:00')]))
+      .toBe(Date.parse('2026-11-12T11:00:00+01:00'));
+  });
+
+  it('an approval older than (or at the same second as) the last base change does not count', () => {
+    const notBefore = Date.parse('2026-11-12T11:00:00+01:00');
+    expect(isApprovedByOwner([at(1, 'kevin', 'APPROVED', '2026-11-12T10:59:59+01:00')], 'kevin', 'head', { notBefore })).toBe(false);
+    expect(isApprovedByOwner([at(1, 'kevin', 'APPROVED', '2026-11-12T11:00:00+01:00')], 'kevin', 'head', { notBefore })).toBe(false);
+    expect(isApprovedByOwner([at(1, 'kevin', 'APPROVED', '2026-11-12T11:00:01+01:00')], 'kevin', 'head', { notBefore })).toBe(true);
+    expect(prStateFromReviews([at(1, 'kevin', 'APPROVED', '2026-11-12T10:00:00+01:00')], 'kevin', 'head', true, { notBefore })).toBe('in-review');
+  });
+
+  it('approvalOf reads reviews and the timeline; an unreadable timeline is not approved', async () => {
+    const reviews = [at(1, 'kevin', 'APPROVED', '2026-11-12T10:00:00+01:00')];
+    const pr = { number: 3, head: { sha: 'head' }, state: 'open' as const };
+    const ok = { listReviews: async () => reviews, timeline: async () => [] };
+    expect(await approvalOf(ok, 'repos', 'demo', pr, 'kevin')).toEqual({ state: 'approved', approved: true });
+    const moved = { listReviews: async () => reviews, timeline: async () => [change('2026-11-12T11:00:00+01:00')] };
+    expect(await approvalOf(moved, 'repos', 'demo', pr, 'kevin')).toMatchObject({ state: 'in-review', approved: false, baseChangedAfterApproval: true });
+    const broken = { listReviews: async () => reviews, timeline: async () => { throw new Error('boom'); } };
+    expect(await approvalOf(broken, 'repos', 'demo', pr, 'kevin')).toMatchObject({ state: 'in-review', approved: false, warning: expect.stringMatching(/timeline.*boom/) });
+  });
+});

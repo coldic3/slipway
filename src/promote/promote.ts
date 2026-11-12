@@ -1,10 +1,10 @@
 import type { SlipwayConfig } from '../config.ts';
-import { isApprovedByOwner } from '../core/approval.ts';
+import { approvalOf } from '../core/approval.ts';
 import type { GiteaClient } from '../gitea/client.ts';
 import type { GitHubClient } from '../github/client.ts';
 import { run, type ExecResult } from '../util/exec.ts';
 import { basicAuthArgs, bearerAuthArgs } from '../util/git-auth.ts';
-import { prepareBranch, pushToOrigin, PushRejectedError } from './git.ts';
+import { originHasBranch, prepareBranch, pushToOrigin, PushRejectedError } from './git.ts';
 import { scanSecrets, type ScanResult } from './secrets.ts';
 
 /** CONFLICT = the branch is behind its base: rebase it in Slipway first (no rewriting at promotion). */
@@ -14,7 +14,7 @@ export interface PromoteOptions {
   repo: string;
   pr: number;
   draft: boolean;
-  /** GitHub target branch; defaults to the repo's configured base. */
+  /** GitHub target branch; defaults to the PR's base in Slipway (ADR 0014). Another branch needs `force`. */
   base?: string;
   testCmd?: string;
   /** Promote even if the PR is not in the approved state. */
@@ -24,12 +24,14 @@ export interface PromoteOptions {
 export interface PromoteDeps {
   config: SlipwayConfig;
   githubToken: string;
-  gitea: Pick<GiteaClient, 'getPull' | 'listReviews' | 'comment' | 'closePull'>;
+  gitea: Pick<GiteaClient, 'getPull' | 'listReviews' | 'timeline' | 'listPulls' | 'comment' | 'closePull'>;
   /** Gitea account used to fetch the PR branch (the Claude user from the plugin, or Slipway's admin from the CLI). */
   actor: { username: string; token: string };
-  github: Pick<GitHubClient, 'upsertPull'>;
+  github: Pick<GitHubClient, 'upsertPull' | 'mergedPullFor'>;
   prepare: typeof prepareBranch;
   push: typeof pushToOrigin;
+  /** Whether GitHub (origin) has a branch (stacked PRs: the parent must be there). */
+  originHasBranch: typeof originHasBranch;
   scan: (repoDir: string, range: string) => Promise<ScanResult>;
   runTests: (cmd: string, cwd: string) => Promise<ExecResult>;
   /** git auth args for origin (GitHub) for this clone. */
@@ -53,15 +55,34 @@ export async function promote(o: PromoteOptions, d: PromoteDeps): Promise<Promot
 
   const pr = await d.gitea.getPull(owner, o.repo, o.pr);
   if (pr.state !== 'open') return fail(EXIT.ERROR, `PR #${o.pr} is ${pr.state}; only open PRs can be promoted`);
-  const approved = isApprovedByOwner(await d.gitea.listReviews(owner, o.repo, o.pr), approver, pr.head.sha);
-  if (!approved && !o.force) {
-    return fail(EXIT.NOT_APPROVED, `PR #${o.pr} is not approved by ${approver} at its current head. Approve it in Gitea.`);
+  const approval = await approvalOf(d.gitea, owner, o.repo, pr, approver);
+  if (!approval.approved && !o.force) {
+    const why = approval.warning ? ` (${approval.warning})`
+      : approval.baseChangedAfterApproval ? ' (it was approved before its base changed)' : '';
+    return fail(EXIT.NOT_APPROVED, `PR #${o.pr} is not approved by ${approver} at its current head and base${why}. Approve it in Gitea.`);
   }
 
-  const base = o.base ?? entry.base;
+  // What was reviewed is the diff against the PR's base in Slipway, so that is the GitHub target (ADR 0014).
+  const base = o.base ?? pr.base.ref;
+  if (base !== pr.base.ref && !o.force) {
+    return fail(EXIT.ERROR, `PR #${o.pr} targets ${pr.base.ref} in Slipway, so promoting it to ${base} would publish a diff nobody reviewed. Change its base in Slipway (slipway_update_pr), rebase, push and get a fresh approval.`);
+  }
   const branch = pr.head.ref;
-  d.log(`preparing ${branch} (exact promotion onto origin/${base})`);
   const originAuthArgs = await d.originAuth(entry.path);
+  if (base !== entry.base) {
+    const retarget = `change its base in Slipway to ${entry.base} (slipway_update_pr base="${entry.base}"), rebase onto origin/${entry.base}, push with force_with_lease and get a fresh approval`;
+    if (!(await d.originHasBranch(entry.path, base, originAuthArgs))) {
+      const parent = (await d.gitea.listPulls(owner, o.repo, 'open')).find((p) => p.head.ref === base);
+      return fail(EXIT.ERROR, parent
+        ? `PR #${o.pr} is stacked on #${parent.number} (${base}), which is not on GitHub yet: promote #${parent.number} first.`
+        : `PR #${o.pr} targets ${base}, which is not on GitHub (was its parent merged and the branch deleted?): ${retarget}.`);
+    }
+    const merged = await d.github.mergedPullFor(entry.github, base);
+    if (merged) {
+      return fail(EXIT.ERROR, `PR #${o.pr} targets ${base}, whose GitHub PR ${merged.html_url} is already merged: ${retarget}.`);
+    }
+  }
+  d.log(`preparing ${branch} (exact promotion onto origin/${base})`);
   const prep = await d.prepare({
     repoDir: entry.path,
     reviewUrl: `${d.config.giteaUrl.replace(/\/$/, '')}/${owner}/${o.repo}.git`,

@@ -38,7 +38,7 @@ With `--docker`, Docker restarts the container itself.
 Restart Claude Code if asked. The plugin brings:
 
 - **MCP tools** `slipway_status`, `slipway_start_task`, `slipway_repo_conventions`, `slipway_push`, `slipway_open_pr`, `slipway_update_pr`,
-  `slipway_review_comments`, `slipway_reply`, `slipway_promote`;
+  `slipway_close_pr`, `slipway_list_prs`, `slipway_pr`, `slipway_review_comments`, `slipway_reply`, `slipway_promote`;
 - **skills** `slipway:start-task`, `slipway:open-pr`, `slipway:fix-review`, `slipway:promote`;
 - **a guardrail hook**: in Slipway repos it stops Claude from publishing its task's work on GitHub before review (`git push` to
   GitHub, `gh pr create/ready/merge` and the matching `gh api` calls) and points it to the Slipway tools. When Slipway cannot settle
@@ -62,6 +62,7 @@ Its PRs and replies show under that name, and it can push branches but never mer
 | *(you resolve threads and Approve; edit title/description in Gitea if you like)* | |
 | "Promote it" | publishes **exactly the reviewed commits** (same SHAs): scans for secrets, optionally runs tests, pushes, opens or updates the GitHub PR |
 | *(if `main` moved on GitHub)* | promotion stops; Claude rebases in Slipway with you (asking about each unclear conflict), force-pushes, and you approve again |
+| "Split this PR into two" | opens the parts as a stack (each PR targets the previous one's branch), closes the old PR with a reason, retargets PRs stacked on it, and checks the result in Slipway |
 
 Things worth knowing:
 
@@ -76,7 +77,12 @@ Things worth knowing:
   - the branch is behind the new `main`: Claude rebases in Slipway with you and you approve again (every rebase needs a new approval);
   - a secret found: remove it from the history and rotate it;
   - failed tests.
-- Promotion options (just ask): draft PR, other base branch, run a test command first. Want a single commit? Ask Claude to squash in Slipway before you review.
+- **Stacked PRs.** A PR can target another PR's branch. Changing a PR's base (Claude can, also after your approval) changes the
+  diff you saw, so your approval stops counting and you approve again. Promotion goes to the PR's base: promote the parent first;
+  once the parent is merged on GitHub, Claude retargets the child to `main`, rebases it and asks for a fresh approval (ADR 0014).
+- **Claude sees what you see.** `slipway_list_prs` and `slipway_pr` show every PR with its base, state, commits, reviews, comments
+  and history, so there is no need to send screenshots of Gitea.
+- Promotion options (just ask): draft PR, run a test command first. Want a single commit? Ask Claude to squash in Slipway before you review.
 - From your own terminal, the same promotion is `slipway promote my-app <pr>`.
 
 ## Scope
@@ -86,7 +92,8 @@ working around it: Claude runs as your OS user, with your `gh` login available (
 
 ## Troubleshooting
 
-- Ask Claude for `slipway_status`: it shows Gitea, the repo, the Claude user, the branch's PR and its state.
+- Ask Claude for `slipway_status`: it shows Gitea, the repo, the Claude user, the branch's PR and its state. `slipway_pr` shows
+  one PR in full, including why an approval no longer counts.
 - `slipway status` in your terminal: running or stopped, port, runtime.
 - "not a Slipway repo": run `slipway repo add <clone>`; worktrees of a registered clone work automatically.
 - "port … is already in use": another program has it. `slipway up --port <free port>` (Slipway suggests one) moves Slipway there.

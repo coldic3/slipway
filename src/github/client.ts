@@ -58,4 +58,13 @@ export class GitHubClient {
     });
     return { number: pr.number, html_url: pr.html_url, updated: false };
   }
+
+  /** The merged PR whose head is `head` (same owner), if any: a stacked child must not be promoted into a merged parent. */
+  async mergedPullFor(repo: string, head: string): Promise<{ number: number; html_url: string } | null> {
+    const [owner] = repo.split('/');
+    const q = new URLSearchParams({ head: `${owner}:${head}`, state: 'closed' });
+    const closed = await this.req<Array<{ number: number; html_url: string; merged_at: string | null }>>('GET', `/repos/${repo}/pulls?${q}`);
+    const merged = closed.find((p) => p.merged_at);
+    return merged ? { number: merged.number, html_url: merged.html_url } : null;
+  }
 }

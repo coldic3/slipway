@@ -55,3 +55,28 @@ describe('GiteaClient', () => {
     await expect(new GiteaClient('http://g', 'tok', f).getPull('o', 'r', 1)).rejects.toMatchObject({ status: 403 });
   });
 });
+
+describe('GiteaClient: stacked PR helpers', () => {
+  it('timeline, commits, files and base edits hit the right endpoints', async () => {
+    const calls: any[] = [];
+    const gitea = new GiteaClient('http://g', 'tok', fakeFetch((m, p) => {
+      if (p.startsWith('/repos/o/r/issues/3/timeline')) return [{ type: 'change_target_branch', created_at: '2026-11-12T10:00:00Z', old_ref: 'a', new_ref: 'b' }];
+      if (p.startsWith('/repos/o/r/pulls/3/commits')) return [{ sha: 's1', commit: { message: 'feat: x' } }];
+      if (p.startsWith('/repos/o/r/pulls/3/files')) return [{ filename: 'a.ts', status: 'added', additions: 1, deletions: 0 }];
+      if (m === 'PATCH') return { number: 3 };
+      return [];
+    }, calls));
+    expect((await gitea.timeline('o', 'r', 3))[0]!.new_ref).toBe('b');
+    expect((await gitea.pullCommits('o', 'r', 3))[0]!.sha).toBe('s1');
+    expect((await gitea.pullFiles('o', 'r', 3))[0]!.filename).toBe('a.ts');
+    await gitea.editPull('o', 'r', 3, { base: 'b' });
+    expect(calls.at(-1)).toMatchObject({ method: 'PATCH', path: '/repos/o/r/pulls/3', body: { base: 'b' } });
+  });
+
+  it('branchExists: true on 200, false on 404, throws otherwise', async () => {
+    const status = (s: number) => new GiteaClient('http://g', 't', (async () => new Response('{}', { status: s })) as typeof fetch);
+    expect(await status(200).branchExists('o', 'r', 'feat/a')).toBe(true);
+    expect(await status(404).branchExists('o', 'r', 'feat/a')).toBe(false);
+    await expect(status(500).branchExists('o', 'r', 'feat/a')).rejects.toThrow(/500/);
+  });
+});

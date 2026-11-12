@@ -74,6 +74,15 @@ export async function prepareBranch(o: PrepareOptions): Promise<PrepareResult> {
   return { ok: true, worktree, head: fetchedHead, baseSha, fetchedHead, cleanup };
 }
 
+/** Whether origin (GitHub) has the branch: ls-remote, so nothing is fetched. Throws when origin cannot be reached. */
+export async function originHasBranch(repoDir: string, branch: string, authArgs: string[] = [], env?: NodeJS.ProcessEnv): Promise<boolean> {
+  const r = await run('git', [...authArgs, 'ls-remote', '--exit-code', '--heads', 'origin', `refs/heads/${branch}`],
+    { cwd: repoDir, env: hardenedGitEnv(env ?? process.env), timeoutMs: 60_000 });
+  if (r.code === 0) return true;
+  if (r.code === 2) return false;
+  throw new Error(`could not read branches from GitHub (origin): ${r.stderr.trim().split('\n').pop()}`);
+}
+
 export interface PushOptions {
   /** Kevin's clone; remembers the last promoted SHA per branch in refs/slipway/promoted/<branch>. */
   repoDir: string;
