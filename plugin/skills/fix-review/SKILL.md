@@ -17,8 +17,9 @@ always be in its final shape: **no `fixup!` commits, no "address review" commits
      - the last commit: `git commit --amend --no-edit`;
      - an older commit: `git commit --fixup=<sha>` and then, before pushing,
        `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash $(git merge-base HEAD origin/<base>)`.
+       For a stacked PR (its base is another PR's branch, see `slipway_pr`), use that local branch instead of `origin/<base>`.
    - Adjust commit messages if the change makes them inaccurate (follow the repo's commit conventions).
-3. Check the result: `git log --oneline origin/<base>..HEAD` must show only meaningful commits (no `fixup!`). Run the repo's tests/linters.
+3. Check the result: `git log --oneline origin/<base>..HEAD` (or `<parent branch>..HEAD` for a stacked PR) must show only meaningful commits (no `fixup!`). Run the repo's tests/linters.
 4. Call `slipway_push` with `force_with_lease: true`. If the lease fails, someone else changed the branch: stop and tell the user.
 5. Call `slipway_reply` for **every** `comment_id`: say briefly what you changed (or why not). Never resolve threads; the user does.
 6. Re-check the title and description against `slipway_repo_conventions` and the new state of the code. Update them with

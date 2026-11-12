@@ -9,8 +9,9 @@ Promotion publishes **exactly** the commits the user approved: no rebase, no squ
 
 1. Call `slipway_status` (with `cwd`). The PR state must be **approved**. If it isn't, tell the user it needs their approval
    in Gitea first; do not try to work around it.
-2. Call `slipway_promote` with `cwd` (and `pr` if needed). Options, only when the user asked: `draft: true`, `base`,
-   `test_cmd` (e.g. the repo's test command).
+2. Call `slipway_promote` with `cwd` (and `pr` if needed). Options, only when the user asked: `draft: true`,
+   `test_cmd` (e.g. the repo's test command). The GitHub target is the PR's base in Slipway; to change it, use
+   `slipway_update_pr` `base` (that needs a fresh approval).
 3. On success, give the user the GitHub PR URL (a PR that already existed for the branch is updated, not duplicated).
 4. If it is blocked, follow what the tool says:
    - **Behind the base:** `main` on GitHub moved. Rebase in Slipway, **interactively with the user**:
@@ -24,6 +25,11 @@ Promotion publishes **exactly** the commits the user approved: no rebase, no squ
      credential must be rotated, and wait for re-approval.
    - **Tests failed:** fix (folding the fix into the right commit), force-push with lease, wait for re-approval.
    - **GitHub branch has commits that are not in the Slipway PR:** tell the user; they decide how to bring them in.
+   - **Stacked on a PR not on GitHub yet:** promote the parent first (with the user's go-ahead), then this one.
+   - **The parent is merged or gone on GitHub:** retarget with `slipway_update_pr` `base` = the repo base, `git fetch origin`,
+     rebase onto `origin/<base>` (with the user, as above; commits the parent already brought in drop out), `slipway_push` with
+     `force_with_lease: true`, and ask the user for a fresh approval.
+   - **Approved before the base changed:** the approval no longer counts; ask the user to approve again.
 5. Before promotion, never use `gh pr create`, `git push origin` or any other way to GitHub: promotion is the only path.
 6. After promotion the Slipway PR is closed and the branch lives on GitHub. Follow-up work for GitHub reviewers (fixes, replies)
    goes straight to GitHub on that branch (`git push origin <branch>`, `gh pr comment`, …), still following the repo's own rules.
