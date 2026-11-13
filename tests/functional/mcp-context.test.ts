@@ -38,6 +38,7 @@ describe('resolveRepo', () => {
     await git(other, ['init', '-q'], identityEnv(HUMAN));
     await expect(resolveRepo(other, config)).rejects.toThrow(NotRegisteredError);
     await expect(resolveRepo(other, config)).rejects.toThrow(/slipway repo add/);
+    await expect(resolveRepo(other, { ...config, sandbox: 'sb' })).rejects.toThrow(/on the host: .*then slipway sbx setup sb/);
   });
 
   it('not a git repo → NotRegisteredError', async () => {

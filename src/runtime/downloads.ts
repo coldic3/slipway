@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { chmodSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
@@ -90,14 +90,22 @@ export async function ensureGitea(log: (m: string) => void, fetchImpl: Fetch = f
 /** gitleaks: the one on PATH, else the pinned release in the bin dir (downloaded on first use). */
 export async function ensureGitleaks(log: (m: string) => void, fetchImpl: Fetch = fetch): Promise<string> {
   if ((await run('gitleaks', ['version'])).code === 0) return 'gitleaks';
-  const dest = gitleaksBinPath();
+  return fetchGitleaks(platform(), gitleaksBinPath(), log, fetchImpl);
+}
+
+/**
+ * The pinned gitleaks for platform `p` at `dest`, downloaded (sha256-checked) and unpacked on first use. `slipway sbx setup`
+ * uses it for the Linux binary a Docker sandbox needs.
+ */
+export async function fetchGitleaks(p: Platform, dest: string, log: (m: string) => void, fetchImpl: Fetch = fetch): Promise<string> {
   if (existsSync(dest)) return dest;
-  mkdirSync(binDir(), { recursive: true });
-  log(`downloading gitleaks ${GITLEAKS_VERSION} (secret scanner, once)…`);
-  const tmp = mkdtempSync(join(binDir(), '.gitleaks-'));
+  const dir = dirname(dest);
+  mkdirSync(dir, { recursive: true });
+  log(`downloading gitleaks ${GITLEAKS_VERSION} for ${p} (secret scanner, once)…`);
+  const tmp = mkdtempSync(join(dir, '.gitleaks-'));
   try {
     const tgz = join(tmp, 'gitleaks.tar.gz');
-    await download(gitleaksArtifact(), tgz, fetchImpl);
+    await download(gitleaksArtifact(p), tgz, fetchImpl);
     await runOk('tar', ['-xzf', tgz, '-C', tmp, 'gitleaks']);
     chmodSync(join(tmp, 'gitleaks'), 0o755);
     renameSync(join(tmp, 'gitleaks'), dest);

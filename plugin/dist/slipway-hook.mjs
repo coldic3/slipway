@@ -291,18 +291,18 @@ function run(cmd, args, opts = {}) {
 import { existsSync as existsSync2, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 var NotRegisteredError = class extends Error {
-  constructor(where) {
-    super(`${where} is not a Slipway repo. Ask the user to run: slipway repo add <path-to-the-clone>`);
+  constructor(where, sandbox) {
+    super(sandbox ? `${where} is not a Slipway repo. Ask the user to run on the host: slipway repo add <path-to-the-clone>, then slipway sbx setup ${sandbox}` : `${where} is not a Slipway repo. Ask the user to run: slipway repo add <path-to-the-clone>`);
   }
 };
 var real = (p) => existsSync2(p) ? realpathSync(p) : resolve(p);
 async function resolveRepo(cwd, config) {
   const top = await run("git", ["rev-parse", "--show-toplevel"], { cwd });
-  if (top.code !== 0) throw new NotRegisteredError(cwd);
+  if (top.code !== 0) throw new NotRegisteredError(cwd, config.sandbox);
   const common = (await run("git", ["rev-parse", "--git-common-dir"], { cwd })).stdout.trim();
   const mainClone = real(dirname(resolve(cwd, common)));
   const found = Object.entries(config.repos).find(([, r]) => real(r.path) === mainClone);
-  if (!found) throw new NotRegisteredError(mainClone);
+  if (!found) throw new NotRegisteredError(mainClone, config.sandbox);
   const head = (await run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd })).stdout.trim();
   return { name: found[0], entry: found[1], worktree: top.stdout.trim(), branch: head && head !== "HEAD" ? head : null };
 }

@@ -85,6 +85,25 @@ Things worth knowing:
 - Promotion options (just ask): draft PR, run a test command first. Want a single commit? Ask Claude to squash in Slipway before you review.
 - From your own terminal, the same promotion is `slipway promote my-app <pr>`.
 
+## Docker Sandboxes (sbx)
+
+To run Claude Code in a [Docker sandbox](https://docs.docker.com/ai/sandboxes/), keep Slipway on your machine and wire the sandbox
+to it once, from your terminal (not inside the sandbox):
+
+```bash
+sbx create --name my-sandbox claude ~/code/my-project   # or reuse one: sbx ls
+slipway sbx setup my-sandbox
+```
+
+`slipway sbx setup` installs Node.js and gitleaks in the sandbox, lets it reach Slipway (`host.docker.internal:<port>`), copies
+Slipway's config there (without your reviewer login), sends GitHub SSH remotes over HTTPS and installs the plugin. Then run
+`/reload-plugins` in the sandbox's Claude Code. Review links still open on `127.0.0.1` in your browser.
+
+- Promotion from the sandbox is **experimental**. It needs your GitHub login in sbx (the token stays outside the sandbox):
+  `sbx secret set github --sandbox my-sandbox --command 'gh auth token'`. If it fails, promote from a Claude Code session on your
+  machine; the PR and its approval are the same.
+- Run `slipway sbx setup my-sandbox` again after `slipway repo add` or a port change.
+
 ## Scope
 
 Slipway helps you review AI-written code before it reaches GitHub. It guards against mistakes, not against an agent deliberately
@@ -95,7 +114,10 @@ working around it: Claude runs as your OS user, with your `gh` login available (
 - Ask Claude for `slipway_status`: it shows Gitea, the repo, the Claude user, the branch's PR and its state. `slipway_pr` shows
   one PR in full, including why an approval no longer counts.
 - `slipway status` in your terminal: running or stopped, port, runtime.
-- "not a Slipway repo": run `slipway repo add <clone>`; worktrees of a registered clone work automatically.
+- "not a Slipway repo": run `slipway repo add <clone>`; worktrees of a registered clone work automatically. In a Docker
+  sandbox, then also `slipway sbx setup <name>`.
+- In a Docker sandbox, "Executable not found in $PATH" for the MCP server or `node: not found` from the hook: run
+  `slipway sbx setup <name>` on your machine.
 - "port … is already in use": another program has it. `slipway up --port <free port>` (Slipway suggests one) moves Slipway there.
 - Gitea's own log (native): `~/.slipway/gitea/log/`.
 - "GitHub CLI is not logged in": `gh auth login`.

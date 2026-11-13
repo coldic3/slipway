@@ -30,6 +30,12 @@ export interface SlipwayConfig {
   /** Gitea user of this Claude Code install, created by the plugin on first use. */
   claude?: Account;
   repos: Record<string, RepoEntry>;
+  /**
+   * Set only in a Docker sandbox's copy of the config (`slipway sbx setup <name>`, ADR 0015): the sandbox's name. `giteaUrl`
+   * then points at the host (host.docker.internal) and `webUrl` keeps the address the user opens in the browser.
+   */
+  sandbox?: string;
+  webUrl?: string;
 }
 
 /** Config directory: SLIPWAY_HOME, else ~/.slipway. */

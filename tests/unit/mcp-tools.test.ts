@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SlipwayConfig } from '../../src/config.ts';
 import { GiteaError } from '../../src/gitea/client.ts';
 import { resetEnrollmentCache } from '../../src/mcp/enroll.ts';
-import { closePr, listPrs, openPr, prDetails, promoteTool, push, reply, resetIdentityCheck, reviewComments, status, updatePr, type ToolDeps } from '../../src/mcp/tools.ts';
+import { closePr, defaultToolDeps, listPrs, openPr, prDetails, promoteTool, push, reply, resetIdentityCheck, reviewComments, status, updatePr, type ToolDeps } from '../../src/mcp/tools.ts';
 
 const config = (): SlipwayConfig => ({
   giteaUrl: 'http://g', admin: { username: 'admin', password: 'a', token: 'at' }, reviewer: { username: 'slipway', password: 'p', token: 'ot' }, org: 'repos',
@@ -259,6 +259,29 @@ describe('MCP tools', () => {
     for (const re of [/Head: agent\/7-x \(h1\) → Base: main/, /## Description\nb/, /c1aaaaaa feat: x$/m, /added src\/x\.ts \(\+3\/−0\)/,
       /slipway: APPROVED at h1/, /Closed by x: y/, /base main → agent\/6-parent/, /force-pushed aaaaaaaa → bbbbbbbb/,
       /approved before the base changed/, /diff cut at 100000/]) expect(r.text).toMatch(re);
+  });
+
+  it('in a Docker sandbox: status shows the browser URL, an unreachable host Gitea says what to run on the host', async () => {
+    const sandboxed = (): SlipwayConfig => ({ ...config(), giteaUrl: 'http://host.docker.internal:3030', webUrl: 'http://127.0.0.1:3030', sandbox: 'sb' });
+    const { d } = deps();
+    const ok = await status({}, { ...d, loadConfig: sandboxed, ensureGitea: async () => {} });
+    expect(ok.text).toMatch(/Gitea: http:\/\/127\.0\.0\.1:3030/);
+    // Port 9 (discard) refuses at once: the check is deterministic, without the host's own Slipway.
+    const down = await status({}, { ...d, loadConfig: () => ({ ...sandboxed(), giteaUrl: 'http://127.0.0.1:9' }), ensureGitea: defaultToolDeps.ensureGitea });
+    expect(down.isError).toBe(true);
+    expect(down.text).toMatch(/not reachable from this sandbox .*slipway sbx setup sb/);
+  });
+
+  it('without a config inside a Docker sandbox, points to slipway sbx setup on the host', async () => {
+    const { d } = deps();
+    const missing = { ...d, loadConfig: () => { throw new Error('missing'); } };
+    expect((await status({}, missing)).text).toMatch(/slipway init/);
+    process.env.SANDBOX_NAME = 'claude-demo';
+    try {
+      expect((await status({}, missing)).text).toMatch(/on the host: slipway sbx setup claude-demo/);
+    } finally {
+      delete process.env.SANDBOX_NAME;
+    }
   });
 });
 

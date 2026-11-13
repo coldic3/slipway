@@ -27,6 +27,10 @@ Setup:
                                      register a local clone: Gitea repo, protection, remote "review"
   slipway sync-main <repo>           push origin/<base> to Gitea <base> (force)
 
+Docker Sandboxes:
+  slipway sbx setup <name>           let Claude in the sbx sandbox <name> use this Slipway (Node, gitleaks, config,
+                                     network rule, plugin); run it again after repo add or a port change
+
 Promotion (usually done by your agent):
   slipway promote <repo> <pr> [--draft] [--base b] [--test-cmd "npm test"] [--force]
                                      publish an approved PR's exact commits to GitHub (token: SLIPWAY_GITHUB_TOKEN or \`gh auth token\`)
@@ -128,6 +132,13 @@ export async function main(argv: string[]): Promise<number> {
       if (!sub) throw new Error('usage: slipway sync-main <repo>');
       await syncMain(sub);
       log(`synced ${sub}`);
+      return 0;
+    }
+    case 'sbx': {
+      const name = rest[0];
+      if (sub !== 'setup' || !name || name.startsWith('-')) throw new Error('usage: slipway sbx setup <sandbox-name>');
+      const { runSbxSetup } = await import('./sbx/cli.ts');
+      await runSbxSetup(name, log);
       return 0;
     }
     case 'promote': {
