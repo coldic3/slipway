@@ -11,7 +11,7 @@
       "name": "slipway",
       "source": "./plugin",
       "description": "Local Gitea review for AI-written PRs, promoted to GitHub after approval.",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "homepage": "https://github.com/coldic3/slipway"
     }
   ]

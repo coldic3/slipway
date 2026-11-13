@@ -36657,7 +36657,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "@coldic3/slipway",
-  version: "1.1.0",
+  version: "1.2.0",
   description: "A local review station for AI-agent pull requests: review in a local Gitea, promote the approved commits to GitHub",
   keywords: [
     "ai",

@@ -1,7 +1,7 @@
 {
   "name": "slipway",
   "description": "Review AI-written PRs in a local Gitea before they reach GitHub: open PRs, address review comments and promote approved PRs from the same Claude Code session.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": {
     "name": "Kevin Kaniaburka"
   },
