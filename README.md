@@ -95,6 +95,9 @@ Slipway currently supports Claude Code as the AI agent and GitHub as the Git hos
 Slipway extensible, so that other AI agents and Git hosts (such as GitLab) can be added as integrations in future releases.
 Contributions are welcome.
 
+Claude Code can also run in a [Docker sandbox](https://docs.docker.com/ai/sandboxes/) (`sbx`), with Slipway on the host
+(`slipway sbx setup <sandbox>`).
+
 ## Commands
 
 ```bash
@@ -105,6 +108,7 @@ slipway status
 slipway repo add <clone> [--name n] [--github owner/repo] [--base main]
 slipway promote <repo> <pr> [--draft] [--base b] [--test-cmd "…"] [--force]
 slipway sync-main <repo>
+slipway sbx setup <sandbox>           # wire a Docker sandbox to this Slipway (again after repo add or a port change)
 slipway setup | --help | --version
 ```
 

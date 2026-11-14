@@ -99,8 +99,8 @@ slipway sbx setup my-sandbox
 Slipway's config there (without your reviewer login), sends GitHub SSH remotes over HTTPS and installs the plugin. Then run
 `/reload-plugins` in the sandbox's Claude Code. Review links still open on `127.0.0.1` in your browser.
 
-- Promotion from the sandbox is **experimental**. It needs your GitHub login in sbx (the token stays outside the sandbox):
-  `sbx secret set github --sandbox my-sandbox --command 'gh auth token'`. If it fails, promote from a Claude Code session on your
+- Promotion from the sandbox needs your GitHub login in sbx (the token stays outside the sandbox):
+  `sbx secret set github --sandbox my-sandbox --command 'gh auth token'`. You can also promote from a Claude Code session on your
   machine; the PR and its approval are the same.
 - Run `slipway sbx setup my-sandbox` again after `slipway repo add` or a port change.
 
