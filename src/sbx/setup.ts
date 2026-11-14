@@ -166,7 +166,7 @@ export async function prepareSandbox(name: string, d: SandboxDeps): Promise<void
   const registered = new Set(Object.values(host.repos).map((r) => r.path));
   for (const w of workspaces) if (!registered.has(w)) notes.push(`${w} is not a Slipway repo yet: slipway repo add ${w}, then slipway sbx setup ${name} again`);
   if (!(await hasGitHubSecret(sbx, name))) {
-    notes.push(`To promote from the sandbox (experimental; promoting from the host always works), give it your GitHub login (the sbx proxy keeps the token): sbx secret set github --sandbox ${name} --command 'gh auth token'`);
+    notes.push(`To promote from the sandbox, give it your GitHub login (the sbx proxy keeps the token): sbx secret set github --sandbox ${name} --command 'gh auth token'`);
   }
 
   log(`sandbox ${name} is ready: Slipway at ${url}, Claude user ${claude.username}`);

@@ -23,7 +23,7 @@ One Slipway per machine, on the host. A host command, `slipway sbx setup <name>`
 - **GitHub:** without an SSH agent in the sandbox, `git@github.com:` and `ssh://git@github.com/` are rewritten to HTTPS in the
   sandbox's global git config, so the proxy can add the login. In a sandbox, promotion adds no GitHub auth header of its own (the token
   `gh` reports there is a placeholder). The login comes from `sbx secret set github`. Slipway prints that command but never runs it. Promotion from a sandbox
-  ships as experimental: it is not yet verified end to end that the proxy authenticates `git push` over HTTPS and the API calls.
+  was verified end to end: the proxy authenticates `git push` over HTTPS and the API calls.
 - **Plugin:** installed or updated in the sandbox's Claude Code, as `slipway init` does on the host.
 - **Plugin behaviour in a sandbox:** it never starts Gitea (there is no `instance.json`); it only checks that the host's Gitea is
   reachable. Its errors tell the user what to run on the host (`slipway sbx setup <name>`, `slipway repo add` and then `slipway sbx setup`).
