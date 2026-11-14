@@ -34,9 +34,10 @@ then configure the trusted publisher and the variable as above.
 ## Each release
 
 ```bash
-# bump the version in the three files, then:
+npm version X.Y.Z --no-git-tag-version   # package.json and package-lock.json
+# then the same version in plugin/.claude-plugin/plugin.json and .claude-plugin/marketplace.json
+npm run build:plugin                     # the MCP bundle carries the version, so plugin/dist changes too
 npm run typecheck && npm test && npm run test:e2e
-npm run build:plugin && git diff --exit-code plugin/dist
 git commit -am "chore: release X.Y.Z"
 git tag vX.Y.Z && git push origin main vX.Y.Z
 ```
