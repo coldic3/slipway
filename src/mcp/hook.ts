@@ -18,8 +18,9 @@ import { WORKTREES_DIR } from './start-task.ts';
  * judged by its branch's Slipway PR:
  * - only closed PRs (promoted, or deliberately closed) → allowed, the branch now lives on GitHub;
  * - an open PR → denied, the work goes through Slipway first;
- * - no PR → denied for the session's own task branch (a Slipway worktree), else the user is asked: a hotfix on main, a
- *   colleague's PR, a branch from outside Slipway are the user's call.
+ * - no PR → denied when it is new work: the session's own task branch (a Slipway worktree), a new PR (`gh pr create`, `gh api`
+ *   on `pulls`) or a branch GitHub does not have yet. Claude is told to open it in Slipway without asking (ADR 0016). The base
+ *   branch (a hotfix) and branches already on GitHub (a colleague's PR, work from outside Slipway) are the user's call: asked.
  * Whatever cannot be told (tags, deletions, many branches, detached HEAD, Slipway down) is asked, never silently allowed.
  */
 export interface HookInput {
@@ -41,6 +42,10 @@ export interface HookEnv {
   currentBranch(): string | null;
   /** True when the session works in a Slipway task worktree (`.slipway/worktrees/…`): its branch is the agent's task. */
   inTaskWorktree(): boolean;
+  /** The repo's base branch in Slipway (e.g. `main`). */
+  base(): string;
+  /** Whether GitHub has the branch, as far as this clone knows (`refs/remotes/origin/<branch>`); true when it cannot tell. */
+  onGitHub(branch: string): Promise<boolean>;
   /** Slipway PR state for a branch; throws when Slipway cannot be asked. */
   branchState(branch: string): Promise<BranchState>;
   /** Head branch of a GitHub PR given by number, URL or branch (as `gh pr <cmd> <arg>` takes it); null if unknown. */
@@ -239,7 +244,7 @@ const stripOwner = (head: string) => head.slice(head.indexOf(':') + 1) || null;
  * creates, updates or deletes); `current` means the session's branch (GraphQL, whose target cannot be told). `unknown`
  * says why no branch can be told (a tag, a default branch, bare git objects): then the user is asked.
  */
-type ApiTarget = { pr: string } | { branch: string | 'current'; deleting?: boolean } | { unknown: string };
+type ApiTarget = { pr: string } | { branch: string | 'current'; deleting?: boolean; newPr?: boolean } | { unknown: string };
 
 function ghApiPublishes(cmd: SimpleCommand, cwd: string): ApiTarget | null {
   const w = cmd.words;
@@ -254,9 +259,9 @@ function ghApiPublishes(cmd: SimpleCommand, cwd: string): ApiTarget | null {
   if (pull) return { pr: owner === '{owner}' && repo === '{repo}' ? pull[1]! : `https://github.com/${owner}/${repo}/pull/${pull[1]}` };
   if (rest === 'pulls') {
     const head = ghApiField(w, 'head');
-    if (head === null) return { branch: 'current' }; // gh api requires a head; without one, judge the session's branch
+    if (head === null) return { branch: 'current', newPr: true }; // gh api requires a head; without one, judge the session's branch
     const branch = stripOwner(head);
-    return branch ? { branch } : { unknown: 'a PR without a head branch' };
+    return branch ? { branch, newPr: true } : { unknown: 'a PR without a head branch' };
   }
   if (rest === 'merges') {
     const head = ghApiField(w, 'head');
@@ -321,13 +326,20 @@ export const pushRemote = (args: string[]) => firstPositional(args, PUSH_OPTS_WI
 const PUSH_HINT = 'push with the slipway_push tool (it pushes to the local review Gitea); GitHub gets the branch through promotion';
 const ASK_TAIL = 'Allow it only if you want it on GitHub without the local review.';
 
+/** Denial for new work headed for GitHub: Claude opens it in Slipway on its own instead of asking the user. */
+const toSlipway = (branch: string, what: string, current: boolean) =>
+  `Slipway: "${branch}" has no Slipway PR, so ${what} would put new work on GitHub without the local review. Do not ask the user ` +
+  `about GitHub: open the PR in Slipway now, ${current ? '' : `check out "${branch}", `}${PUSH_HINT}, then slipway_open_pr. ` +
+  'Only if the user explicitly said this branch must skip the review, tell them to run the command themselves.';
+
 /**
  * A publishing write on `branch` (null: it cannot be told, e.g. a detached HEAD or an unknown PR head), described to the
- * user as `what`. A branch whose Slipway PRs are all closed passes; an open PR denies; without a PR the session's own task
- * branch (current branch in a Slipway worktree) is denied and any other branch is asked. `deleting`: the write deletes the
+ * user as `what`. A branch whose Slipway PRs are all closed passes; an open PR denies. Without a PR, new work is denied with
+ * the way into Slipway: the session's own task branch (current branch in a Slipway worktree), a new PR (`newPr`) or a branch
+ * GitHub does not have yet; the base branch and branches already on GitHub are asked. `deleting`: the write deletes the
  * branch, which is asked even for an open Slipway PR (it publishes nothing).
  */
-async function judgeBranch(branch: string | null, what: string, env: HookEnv, opts: { deleting?: boolean } = {}): Promise<Decision> {
+async function judgeBranch(branch: string | null, what: string, env: HookEnv, opts: { deleting?: boolean; newPr?: boolean } = {}): Promise<Decision> {
   if (!branch) {
     return { action: 'ask', reason: `Slipway: cannot tell which branch ${what} targets (detached HEAD, or an unknown PR?). ${ASK_TAIL}` };
   }
@@ -344,6 +356,9 @@ async function judgeBranch(branch: string | null, what: string, env: HookEnv, op
   }
   if (branch === env.currentBranch() && env.inTaskWorktree()) {
     return { action: 'deny', reason: `Slipway: "${branch}" is this task's branch and has no Slipway PR yet, so ${what} would skip the local review: ${PUSH_HINT}, then slipway_open_pr.` };
+  }
+  if (branch !== env.base() && (opts.newPr || !(await env.onGitHub(branch).catch(() => true)))) {
+    return { action: 'deny', reason: toSlipway(branch, what, branch === env.currentBranch()) };
   }
   return { action: 'ask', reason: `Slipway: "${branch}" has no Slipway PR, so ${what} publishes it on GitHub without the local review. ${ASK_TAIL}` };
 }
@@ -419,7 +434,7 @@ async function judgeCommand(c: SimpleCommand, cwd: string, env: HookEnv): Promis
       const sel = ghPrSelector(args);
       branch = sel === null ? env.currentBranch() : await env.githubPrHead(sel).catch(() => null);
     }
-    return judgeBranch(branch, `"gh pr ${w[2]}"`, env);
+    return judgeBranch(branch, `"gh pr ${w[2]}"`, env, { newPr: w[2] === 'create' });
   }
   if (w[0] === 'gh' && w[1] === 'api') {
     const p = ghApiPublishes(c, cwd);
@@ -427,7 +442,7 @@ async function judgeCommand(c: SimpleCommand, cwd: string, env: HookEnv): Promis
     const what = 'this "gh api" call';
     if ('unknown' in p) return { action: 'ask', reason: `Slipway: ${what} is ${p.unknown}, which no Slipway PR covers. ${ASK_TAIL}` };
     if ('pr' in p) return judgeBranch(await env.githubPrHead(p.pr).catch(() => null), what, env);
-    return judgeBranch(p.branch === 'current' ? env.currentBranch() : p.branch, what, env, { deleting: p.deleting });
+    return judgeBranch(p.branch === 'current' ? env.currentBranch() : p.branch, what, env, { deleting: p.deleting, newPr: p.newPr });
   }
   return ALLOW;
 }
@@ -449,7 +464,7 @@ export async function decide(input: HookInput, env: HookEnv): Promise<Decision> 
   return ask ?? ALLOW;
 }
 
-type RepoInfo = { name: string; branch: string | null; worktree: string; entry: { path: string } };
+type RepoInfo = { name: string; branch: string | null; worktree: string; entry: { path: string; base: string } };
 
 /** Real environment: Gitea for the Slipway PR state, `gh` for GitHub PR heads, git for push remotes. */
 export function hookEnv(config: SlipwayConfig, repo: RepoInfo): HookEnv {
@@ -466,6 +481,12 @@ export function hookEnv(config: SlipwayConfig, repo: RepoInfo): HookEnv {
     isRegistered: () => true,
     currentBranch: () => repo.branch,
     inTaskWorktree: () => (realOrSelf(repo.worktree) + sep).startsWith(tasks),
+    base: () => repo.entry.base,
+    // Local only (no network): a branch this clone never saw on origin is new work.
+    async onGitHub(branch) {
+      const r = await run('git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`], { cwd: repo.worktree, timeoutMs: 5_000 });
+      return r.code !== 1; // 1: no such ref; anything else (found, or git failed) does not prove the branch is new
+    },
     async branchState(branch) {
       // One listing per hook run, however many branches and subcommands the command has.
       states ??= gitea.listPulls(config.org, repo.name, 'all').then((pulls) => {
