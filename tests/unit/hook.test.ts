@@ -8,15 +8,20 @@ const SLIPWAY_HOME = join(homedir(), '.slipway');
 
 /**
  * Slipway PR state per branch; `current` is the session's branch, in a Slipway task worktree unless `task: false`.
- * GitHub PR heads only when mapped. Every remote goes to GitHub except those in `otherRemotes`.
+ * GitHub PR heads only when mapped. Every remote goes to GitHub except those in `otherRemotes`. The base is `main`; GitHub
+ * has the branches in `onGitHub` (default: main and a few branches from outside Slipway), every other branch is new.
  */
+const ON_GITHUB = ['main', 'feature/colleague', 'feature/hc-4', 'hotfix', 'other'];
 function env(states: Record<string, BranchState>, opts: {
   current?: string | null; task?: boolean; registered?: boolean; giteaDown?: boolean; ghHeads?: Record<string, string>; otherRemotes?: string[];
+  onGitHub?: string[];
 } = {}): HookEnv {
   return {
     isRegistered: () => opts.registered ?? true,
     currentBranch: () => (opts.current === undefined ? 'agent/1-x' : opts.current),
     inTaskWorktree: () => opts.task ?? true,
+    base: () => 'main',
+    async onGitHub(b) { return (opts.onGitHub ?? ON_GITHUB).includes(b); },
     async branchState(b) {
       if (opts.giteaDown) throw new Error('ECONNREFUSED');
       return states[b] ?? 'none';
@@ -88,7 +93,7 @@ describe('PreToolUse hook: what Slipway cannot settle is asked, not denied', () 
     'git push origin main', // e.g. a hotfix the user asked for
     'git push origin feature/colleague',
     'gh pr merge 70 --squash', // a PR whose head Slipway does not know
-    'gh pr create --head docs/x --title t --body b',
+    'git push origin hotfix', // a branch GitHub already has
     'gh api -X PUT repos/o/r/pulls/70/merge',
   ])('a branch without a Slipway PR that is not this task\'s → ask: %s', async (cmd) => {
     const e = env({}, { ghHeads: { '70': 'feature/hc-4', 'https://github.com/o/r/pull/70': 'feature/hc-4' } });
@@ -97,9 +102,9 @@ describe('PreToolUse hook: what Slipway cannot settle is asked, not denied', () 
     if (d.action !== 'allow') expect(d.reason).toMatch(/without the local review/);
   });
 
-  it('outside a task worktree even the current branch is asked (the main checkout, a branch from outside Slipway)', async () => {
+  it('outside a task worktree the base and a branch GitHub already has are asked', async () => {
     expect(await act('git push', env({}, { current: 'main', task: false }))).toBe('ask');
-    expect(await act('git push', env({}, { task: false }))).toBe('ask');
+    expect(await act('git push', env({}, { current: 'feature/colleague', task: false }))).toBe('ask');
   });
 
   it.each([
@@ -128,6 +133,35 @@ describe('PreToolUse hook: what Slipway cannot settle is asked, not denied', () 
   });
 });
 
+describe('PreToolUse hook: new work without a Slipway PR is sent to Slipway, not asked (ADR 0016)', () => {
+  it.each([
+    ['git push -u origin HEAD', { current: 'feature/new', task: false }], // the main checkout, a branch GitHub does not have
+    ['git push origin feature/new', {}],
+    ['gh pr create --title t --body b', { current: 'feature/colleague', task: false }], // a new PR, even for a branch on GitHub
+    ['gh pr create --head docs/x --title t --body b', {}],
+    ['gh api repos/o/r/pulls -f head=hotfix -f base=main -f title=x', {}],
+    ['gh api -X POST repos/o/r/git/refs -f ref=refs/heads/feature/new -f sha=abc', {}],
+  ] as const)('deny with the way into Slipway: %s', async (cmd, opts) => {
+    const d = await decide(bash(cmd), env({}, opts));
+    expect(d.action).toBe('deny');
+    if (d.action !== 'allow') expect(d.reason).toMatch(/Do not ask the user[\s\S]*slipway_push[\s\S]*slipway_open_pr/);
+  });
+
+  it('tells Claude to check out a branch other than the current one', async () => {
+    const d = await decide(bash('git push origin feature/new'), env({}));
+    if (d.action !== 'allow') expect(d.reason).toMatch(/check out "feature\/new"/);
+    const own = await decide(bash('git push'), env({}, { current: 'feature/new', task: false }));
+    if (own.action !== 'allow') expect(own.reason).not.toMatch(/check out/);
+  });
+
+  it('the base branch and branches already on GitHub are still asked; an unsure lookup counts as on GitHub', async () => {
+    expect(await act('git push origin main', env({}))).toBe('ask');
+    expect(await act('git push origin feature/colleague', env({}))).toBe('ask');
+    const unsure: HookEnv = { ...env({}), onGitHub: async () => { throw new Error('git failed'); } };
+    expect(await act('git push origin feature/new', unsure)).toBe('ask');
+  });
+});
+
 describe('PreToolUse hook: branches whose Slipway PR is closed (promoted) live on GitHub', () => {
   const promoted = env({ 'agent/1-x': 'closed' }, { ghHeads: { '7': 'agent/1-x', '8': 'agent/2-y' } });
   it.each([
@@ -152,8 +186,8 @@ describe('PreToolUse hook: branches whose Slipway PR is closed (promoted) live o
 
   it('judges each branch: pushing a promoted branch does not clear an unreviewed one', async () => {
     const e = env({ 'agent/1-x': 'closed' }, { current: 'agent/1-x' });
-    expect(await act('git push origin agent/3-new', e)).toBe('ask');
-    expect(await act('gh pr create --head agent/3-new --title t --body b', e)).toBe('ask');
+    expect(await act('git push origin agent/3-new', e)).toBe('deny');
+    expect(await act('gh pr create --head agent/3-new --title t --body b', e)).toBe('deny');
   });
 });
 
@@ -322,7 +356,7 @@ describe('PreToolUse hook: review fixes', () => {
 
   it('a new PR through gh api is judged by its head branch, not the session branch', async () => {
     const e = env({ 'agent/1-x': 'open' }); // session: task branch with an open Slipway PR
-    expect(await act('gh api repos/o/r/pulls -f head=feature/colleague -f base=main -f title=x', e)).toBe('ask');
+    expect(await act('gh api repos/o/r/pulls -f head=feature/colleague -f base=main -f title=x', e)).toBe('deny'); // a new PR
     expect(await act('gh api repos/o/r/pulls -f head=octo:agent/1-x -f base=main', e)).toBe('deny');
     expect(await act('gh api repos/o/r/pulls -f title=x -f base=main', e)).toBe('deny'); // no head: the session branch
     expect(await act('gh api repos/o/r/pulls -f head=agent/9-done', env({ 'agent/9-done': 'closed' }))).toBe('allow');

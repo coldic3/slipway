@@ -17,7 +17,7 @@
 - Hook `timeout` in `hooks.json` is in seconds (command hooks default to 600); a timed-out hook does not block unless
   `"onFailure": "block"`.
 - Our hook asks Gitea (`/pulls?state=all`, matched on `head.ref`) per guarded command: closed → allow, open → deny, none → deny on
-  the task branch, else ask (ADR 0009, 0013). The functional plugin test has no Gitea, so it exercises the ask path (`slipway up`).
+  new work (task branch, a new PR, a branch without `refs/remotes/origin/<b>`), else ask (ADR 0009, 0013, 0016). The functional plugin test has no Gitea, so it exercises the ask path (`slipway up`).
 - MCP SDK 1.32: `new McpServer({name, version}).registerTool(name, {description, inputSchema: {zod raw shape}}, handler)`; zod 4 works.
   Test clients: `Client` + `StdioClientTransport({command, args, cwd, env})`.
 - Gitea admin API for enrollment: `POST /admin/users` {username, email, password, must_change_password:false} (422 if it exists),

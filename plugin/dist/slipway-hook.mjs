@@ -846,9 +846,9 @@ function ghApiPublishes(cmd, cwd) {
   if (pull) return { pr: owner === "{owner}" && repo === "{repo}" ? pull[1] : `https://github.com/${owner}/${repo}/pull/${pull[1]}` };
   if (rest === "pulls") {
     const head = ghApiField(w, "head");
-    if (head === null) return { branch: "current" };
+    if (head === null) return { branch: "current", newPr: true };
     const branch = stripOwner(head);
-    return branch ? { branch } : { unknown: "a PR without a head branch" };
+    return branch ? { branch, newPr: true } : { unknown: "a PR without a head branch" };
   }
   if (rest === "merges") {
     const head = ghApiField(w, "head");
@@ -903,6 +903,7 @@ function ghCreateHead(args) {
 var pushRemote = (args) => firstPositional(args, PUSH_OPTS_WITH_VALUE);
 var PUSH_HINT = "push with the slipway_push tool (it pushes to the local review Gitea); GitHub gets the branch through promotion";
 var ASK_TAIL = "Allow it only if you want it on GitHub without the local review.";
+var toSlipway = (branch, what, current) => `Slipway: "${branch}" has no Slipway PR, so ${what} would put new work on GitHub without the local review. Do not ask the user about GitHub: open the PR in Slipway now, ${current ? "" : `check out "${branch}", `}${PUSH_HINT}, then slipway_open_pr. Only if the user explicitly said this branch must skip the review, tell them to run the command themselves.`;
 async function judgeBranch(branch, what, env, opts = {}) {
   if (!branch) {
     return { action: "ask", reason: `Slipway: cannot tell which branch ${what} targets (detached HEAD, or an unknown PR?). ${ASK_TAIL}` };
@@ -920,6 +921,9 @@ async function judgeBranch(branch, what, env, opts = {}) {
   }
   if (branch === env.currentBranch() && env.inTaskWorktree()) {
     return { action: "deny", reason: `Slipway: "${branch}" is this task's branch and has no Slipway PR yet, so ${what} would skip the local review: ${PUSH_HINT}, then slipway_open_pr.` };
+  }
+  if (branch !== env.base() && (opts.newPr || !await env.onGitHub(branch).catch(() => true))) {
+    return { action: "deny", reason: toSlipway(branch, what, branch === env.currentBranch()) };
   }
   return { action: "ask", reason: `Slipway: "${branch}" has no Slipway PR, so ${what} publishes it on GitHub without the local review. ${ASK_TAIL}` };
 }
@@ -984,7 +988,7 @@ async function judgeCommand(c, cwd, env) {
       const sel = ghPrSelector(args);
       branch = sel === null ? env.currentBranch() : await env.githubPrHead(sel).catch(() => null);
     }
-    return judgeBranch(branch, `"gh pr ${w[2]}"`, env);
+    return judgeBranch(branch, `"gh pr ${w[2]}"`, env, { newPr: w[2] === "create" });
   }
   if (w[0] === "gh" && w[1] === "api") {
     const p = ghApiPublishes(c, cwd);
@@ -992,7 +996,7 @@ async function judgeCommand(c, cwd, env) {
     const what = 'this "gh api" call';
     if ("unknown" in p) return { action: "ask", reason: `Slipway: ${what} is ${p.unknown}, which no Slipway PR covers. ${ASK_TAIL}` };
     if ("pr" in p) return judgeBranch(await env.githubPrHead(p.pr).catch(() => null), what, env);
-    return judgeBranch(p.branch === "current" ? env.currentBranch() : p.branch, what, env, { deleting: p.deleting });
+    return judgeBranch(p.branch === "current" ? env.currentBranch() : p.branch, what, env, { deleting: p.deleting, newPr: p.newPr });
   }
   return ALLOW;
 }
@@ -1025,6 +1029,12 @@ function hookEnv(config, repo) {
     isRegistered: () => true,
     currentBranch: () => repo.branch,
     inTaskWorktree: () => (realOrSelf(repo.worktree) + sep).startsWith(tasks),
+    base: () => repo.entry.base,
+    // Local only (no network): a branch this clone never saw on origin is new work.
+    async onGitHub(branch) {
+      const r = await run("git", ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], { cwd: repo.worktree, timeoutMs: 5e3 });
+      return r.code !== 1;
+    },
     async branchState(branch) {
       states ??= gitea.listPulls(config.org, repo.name, "all").then((pulls) => {
         const m = /* @__PURE__ */ new Map();
