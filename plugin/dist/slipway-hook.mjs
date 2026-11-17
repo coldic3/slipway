@@ -759,7 +759,7 @@ var PUBLISH_MUTATIONS = /* @__PURE__ */ new Set([
   "updateRef",
   "updateRefs"
 ]);
-function graphqlPublishes(cmd, cwd) {
+function graphqlPublishes(cmd, cwd, written = /* @__PURE__ */ new Map()) {
   const w = cmd.words;
   const sources = [];
   const files = [];
@@ -787,11 +787,18 @@ function graphqlPublishes(cmd, cwd) {
     }
   }
   if (stdin) sources.push(...cmd.heredocs);
+  let unreadable = false;
   for (const f of files) {
+    const abs = resolve2(cwd, expandHome(f));
+    const body = written.get(abs);
+    if (body !== void 0) {
+      sources.push(body);
+      continue;
+    }
     try {
-      sources.push(readFileSync2(resolve2(cwd, f.replace(/^~(?=\/)/, homedir2())), "utf8"));
+      sources.push(readFileSync2(abs, "utf8"));
     } catch {
-      return true;
+      unreadable = true;
     }
   }
   for (const source of sources) {
@@ -800,7 +807,7 @@ function graphqlPublishes(cmd, cwd) {
     const names = [...text.matchAll(/\b([A-Za-z_]\w*)\s*\(\s*input\s*:/g)].map((m) => m[1]);
     if (names.length === 0 || names.some((n) => PUBLISH_MUTATIONS.has(n))) return true;
   }
-  return false;
+  return unreadable ? "unreadable" : false;
 }
 function ghApiMethod(w) {
   let fields = false;
@@ -833,10 +840,13 @@ function ghApiField(w, name) {
   return null;
 }
 var stripOwner = (head) => head.slice(head.indexOf(":") + 1) || null;
-function ghApiPublishes(cmd, cwd) {
+function ghApiPublishes(cmd, cwd, written) {
   const w = cmd.words;
   const endpoint = ghApiEndpoint(w);
-  if (endpoint === "graphql") return graphqlPublishes(cmd, cwd) ? { branch: "current" } : null;
+  if (endpoint === "graphql") {
+    const p = graphqlPublishes(cmd, cwd, written);
+    return p === "unreadable" ? { unknown: "a GraphQL request from a file the hook cannot read" } : p ? { branch: "current" } : null;
+  }
   const method = ghApiMethod(w);
   if (endpoint === null || !restPublishes(endpoint, method)) return null;
   const m = /^\/?repos\/([^/]+)\/([^/]+)\/(.*?)\/*(?:\?.*)?$/.exec(endpoint);
@@ -950,7 +960,7 @@ function realOrSelf(p) {
     return p;
   }
 }
-async function judgeCommand(c, cwd, env) {
+async function judgeCommand(c, cwd, env, written) {
   const w = c.words;
   const exe = (w[0] ?? "").split("/").pop();
   if (w[0] === "git") {
@@ -987,7 +997,7 @@ async function judgeCommand(c, cwd, env) {
     return judgeBranch(branch, `"gh pr ${w[2]}"`, env);
   }
   if (w[0] === "gh" && w[1] === "api") {
-    const p = ghApiPublishes(c, cwd);
+    const p = ghApiPublishes(c, cwd, written);
     if (!p) return ALLOW;
     const what = 'this "gh api" call';
     if ("unknown" in p) return { action: "ask", reason: `Slipway: ${what} is ${p.unknown}, which no Slipway PR covers. ${ASK_TAIL}` };
@@ -1005,10 +1015,12 @@ async function decide(input, env) {
     return { action: "deny", reason: "Slipway: do not read Slipway credentials. Use the slipway_* tools instead." };
   }
   let ask = null;
+  const written = /* @__PURE__ */ new Map();
   for (const c of cmds) {
-    const d = await judgeCommand(c, input.cwd, env);
+    const d = await judgeCommand(c, input.cwd, env, written);
     if (d.action === "deny") return d;
     if (d.action === "ask") ask ??= d;
+    if (c.heredocs.length === 1) for (const r of c.redirects) written.set(resolve2(input.cwd, expandHome(r)), c.heredocs[0]);
   }
   return ask ?? ALLOW;
 }
