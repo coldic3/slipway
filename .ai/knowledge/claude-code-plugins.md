@@ -18,6 +18,8 @@
   `"onFailure": "block"`.
 - Our hook asks Gitea (`/pulls?state=all`, matched on `head.ref`) per guarded command: closed → allow, open → deny, none → deny on
   new work (task branch, a new PR, a branch without `refs/remotes/origin/<b>`), else ask (ADR 0009, 0013, 0016). The functional plugin test has no Gitea, so it exercises the ask path (`slipway up`).
+- The hook runs before the whole Bash command, so a file the same command writes (`cat > q.graphql <<'EOF' … EOF; gh api graphql
+  -F query=@q.graphql`) does not exist yet: the hook takes it from that heredoc. A GraphQL file it cannot read at all is asked.
 - MCP SDK 1.32: `new McpServer({name, version}).registerTool(name, {description, inputSchema: {zod raw shape}}, handler)`; zod 4 works.
   Test clients: `Client` + `StdioClientTransport({command, args, cwd, env})`.
 - Gitea admin API for enrollment: `POST /admin/users` {username, email, password, must_change_password:false} (422 if it exists),

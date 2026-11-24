@@ -149,10 +149,12 @@ const PUBLISH_MUTATIONS = new Set(['createPullRequest', 'mergePullRequest', 'mar
  * GraphQL always goes out as POST, so the document decides. It comes from the `query` field (`-f query=…`, `-F query=@file`),
  * the request body (`--input file`, or a heredoc for `--input -`, JSON or a bare document). Only a mutation operation counts:
  * `mutation` in a string, a comment, a `--jq` filter or another field is not one. It publishes when the mutation has a field
- * from PUBLISH_MUTATIONS; an unreadable file, or a mutation whose fields cannot be told, counts as publishing (fail closed).
- * GitHub mutations all take `input:`, which is how their names are found.
+ * from PUBLISH_MUTATIONS; a mutation whose fields cannot be told counts as publishing (fail closed). A file written by a heredoc
+ * earlier in the same command (`written`, by absolute path) is read from that heredoc, since the hook runs before the command;
+ * a file that cannot be read at all gives `unreadable` (asked). GitHub mutations all take `input:`, which is how their names
+ * are found.
  */
-export function graphqlPublishes(cmd: SimpleCommand, cwd: string): boolean {
+export function graphqlPublishes(cmd: SimpleCommand, cwd: string, written: ReadonlyMap<string, string> = new Map()): boolean | 'unreadable' {
   const w = cmd.words;
   const sources: string[] = [];
   const files: string[] = [];
@@ -180,11 +182,15 @@ export function graphqlPublishes(cmd: SimpleCommand, cwd: string): boolean {
     }
   }
   if (stdin) sources.push(...cmd.heredocs);
+  let unreadable = false;
   for (const f of files) {
+    const abs = resolve(cwd, expandHome(f));
+    const body = written.get(abs);
+    if (body !== undefined) { sources.push(body); continue; }
     try {
-      sources.push(readFileSync(resolve(cwd, f.replace(/^~(?=\/)/, homedir())), 'utf8'));
+      sources.push(readFileSync(abs, 'utf8'));
     } catch {
-      return true;
+      unreadable = true;
     }
   }
   for (const source of sources) {
@@ -193,7 +199,7 @@ export function graphqlPublishes(cmd: SimpleCommand, cwd: string): boolean {
     const names = [...text.matchAll(/\b([A-Za-z_]\w*)\s*\(\s*input\s*:/g)].map((m) => m[1]!);
     if (names.length === 0 || names.some((n) => PUBLISH_MUTATIONS.has(n))) return true;
   }
-  return false;
+  return unreadable ? 'unreadable' : false;
 }
 
 /** The HTTP method `gh api` uses: the explicit one, else POST when it sends fields or a body, else GET. */
@@ -246,10 +252,13 @@ const stripOwner = (head: string) => head.slice(head.indexOf(':') + 1) || null;
  */
 type ApiTarget = { pr: string } | { branch: string | 'current'; deleting?: boolean; newPr?: boolean } | { unknown: string };
 
-function ghApiPublishes(cmd: SimpleCommand, cwd: string): ApiTarget | null {
+function ghApiPublishes(cmd: SimpleCommand, cwd: string, written: ReadonlyMap<string, string>): ApiTarget | null {
   const w = cmd.words;
   const endpoint = ghApiEndpoint(w);
-  if (endpoint === 'graphql') return graphqlPublishes(cmd, cwd) ? { branch: 'current' } : null;
+  if (endpoint === 'graphql') {
+    const p = graphqlPublishes(cmd, cwd, written);
+    return p === 'unreadable' ? { unknown: 'a GraphQL request from a file the hook cannot read' } : p ? { branch: 'current' } : null;
+  }
   const method = ghApiMethod(w);
   if (endpoint === null || !restPublishes(endpoint, method)) return null;
   const m = /^\/?repos\/([^/]+)\/([^/]+)\/(.*?)\/*(?:\?.*)?$/.exec(endpoint);
@@ -400,7 +409,7 @@ function realOrSelf(p: string): string {
 }
 
 /** The decision for one simple command. */
-async function judgeCommand(c: SimpleCommand, cwd: string, env: HookEnv): Promise<Decision> {
+async function judgeCommand(c: SimpleCommand, cwd: string, env: HookEnv, written: ReadonlyMap<string, string>): Promise<Decision> {
   const w = c.words;
   const exe = (w[0] ?? '').split('/').pop();
   if (w[0] === 'git') {
@@ -437,7 +446,7 @@ async function judgeCommand(c: SimpleCommand, cwd: string, env: HookEnv): Promis
     return judgeBranch(branch, `"gh pr ${w[2]}"`, env, { newPr: w[2] === 'create' });
   }
   if (w[0] === 'gh' && w[1] === 'api') {
-    const p = ghApiPublishes(c, cwd);
+    const p = ghApiPublishes(c, cwd, written);
     if (!p) return ALLOW;
     const what = 'this "gh api" call';
     if ('unknown' in p) return { action: 'ask', reason: `Slipway: ${what} is ${p.unknown}, which no Slipway PR covers. ${ASK_TAIL}` };
@@ -456,10 +465,12 @@ export async function decide(input: HookInput, env: HookEnv): Promise<Decision> 
     return { action: 'deny', reason: 'Slipway: do not read Slipway credentials. Use the slipway_* tools instead.' };
   }
   let ask: Decision | null = null;
+  const written = new Map<string, string>(); // files written by heredocs so far (`cat > q.graphql <<'EOF'`)
   for (const c of cmds) {
-    const d = await judgeCommand(c, input.cwd, env);
+    const d = await judgeCommand(c, input.cwd, env, written);
     if (d.action === 'deny') return d;
     if (d.action === 'ask') ask ??= d;
+    if (c.heredocs.length === 1) for (const r of c.redirects) written.set(resolve(input.cwd, expandHome(r)), c.heredocs[0]!);
   }
   return ask ?? ALLOW;
 }

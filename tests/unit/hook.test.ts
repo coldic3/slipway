@@ -288,7 +288,6 @@ describe('PreToolUse hook: gh api graphql is judged by its document, not by POST
     `gh api graphql -f query='mutation { a: resolveReviewThread(input:{threadId:"x"}) { thread { id } } b: mergePullRequest(input:{pullRequestId:"y"}) { clientMutationId } }'`,
     'gh api graphql --input m.json',
     'gh api graphql -F query=@m.graphql',
-    'gh api graphql --input missing.json',
     `gh api graphql --input - <<'EOF'\n{"query":"mutation { x }"}\nEOF`,
   ])('publishing mutation (or an unreadable or unparseable document) → denied on the task branch: %s', async (cmd) => {
     const d = await decide(bash(cmd, dir), env({}));
@@ -412,5 +411,25 @@ describe('PreToolUse hook: second review fixes', () => {
       '(jq . ~/.slipway/config.json)',
     ]) expect(await act(cmd, promoted), cmd).toBe('deny');
     expect(await act("rg -n 'slipway/config.json' src && cd docs && cat config.json", promoted)).toBe('allow');
+  });
+});
+
+describe('PreToolUse hook: a GraphQL file written earlier in the same command', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'slipway-gql-'));
+  const file = join(dir, 'q.graphql'); // never created on disk: the hook runs before the command
+
+  it('is read from the heredoc that writes it, so a query passes', async () => {
+    const cmd = `cat > ${file} <<'EOF'\nquery($cursor:String){ repository(owner:"o",name:"r"){ pullRequests(first:15, after:$cursor){ nodes{ number } } } }\nEOF\ngh api graphql --paginate -F query=@${file} > ${dir}/prs.json; wc -c ${dir}/prs.json`;
+    expect(await act(cmd, env({}, { current: 'worktree-CR', task: false }))).toBe('allow');
+    expect(await act(cmd, env({}))).toBe('allow');
+  });
+
+  it('a mutation written the same way is still judged', async () => {
+    const cmd = `cat > ${file} <<'EOF'\nmutation($id:ID!){ mergePullRequest(input:{pullRequestId:$id}){ clientMutationId } }\nEOF\ngh api graphql -F query=@${file}`;
+    expect(await act(cmd, env({}))).toBe('deny');
+  });
+
+  it('a file the hook cannot read at all is asked, not denied', async () => {
+    expect(await act(`gh api graphql -F query=@${join(dir, 'missing.graphql')}`, env({}))).toBe('ask');
   });
 });
