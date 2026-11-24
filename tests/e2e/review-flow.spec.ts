@@ -98,8 +98,9 @@ test('one Claude session: open PR → review in Gitea UI → fix → approve →
     // Promoted (Slipway PR closed): the branch now lives on GitHub, so follow-ups for human reviewers go there directly (ADR 0009).
     expect(await hookDecision(wt, 'git push origin agent/1-greeting')).toBe('allow');
     expect(await hookDecision(wt, 'git push')).toBe('allow');
-    // A branch without any Slipway PR that is not this task's: the user is asked (ADR 0013).
-    expect(await hookDecision(wt, 'git push origin agent/2-unreviewed')).toBe('ask');
+    // New work without a Slipway PR goes to Slipway without asking (ADR 0016); the base branch is the user's call (ADR 0013).
+    expect(await hookDecision(wt, 'git push origin agent/2-unreviewed')).toBe('deny');
+    expect(await hookDecision(wt, 'git push origin main')).toBe('ask');
   } finally {
     await claude.close();
   }

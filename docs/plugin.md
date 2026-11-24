@@ -41,8 +41,9 @@ Restart Claude Code if asked. The plugin brings:
   `slipway_close_pr`, `slipway_list_prs`, `slipway_pr`, `slipway_review_comments`, `slipway_reply`, `slipway_promote`;
 - **skills** `slipway:start-task`, `slipway:open-pr`, `slipway:fix-review`, `slipway:promote`;
 - **a guardrail hook**: in Slipway repos it stops Claude from publishing its task's work on GitHub before review (`git push` to
-  GitHub, `gh pr create/ready/merge` and the matching `gh api` calls) and points it to the Slipway tools. When Slipway cannot settle
-  a push (a branch outside the task, `main`, tags, deleting a branch, Slipway not running), it asks you instead of refusing. Once the
+  GitHub, `gh pr create/ready/merge` and the matching `gh api` calls) and points it to the Slipway tools. New work (a fresh branch, a
+  new PR) goes to Slipway without asking you. When Slipway cannot settle a push (`main`, a branch already on GitHub, tags,
+  deleting a branch, Slipway not running), it asks you instead of refusing. Once the
   branch's Slipway PR is closed (promotion closes it), the branch lives on GitHub: Claude may push to it and answer GitHub reviewers
   directly. Reviews, comments and other GitHub writes that publish no code, and pushes to other remotes, are never stopped. It also
   stops `slipway promote` from Claude's shell (Claude promotes only through `slipway_promote`) and reads of Slipway's credentials
